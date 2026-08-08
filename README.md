@@ -25,9 +25,12 @@ Read it before touching this repo. The short version:
       the purchased ES/NQ 1-minute files in `ict_lab/data/raw/` (see
       prerequisites in the doc above) before `python -m
       ict_lab.data.build_clean_data` can produce a real quality report or
-      cache. This environment cannot reach data vendor sites (Databento,
-      Firstrate Data, Kibot, CME DataMine) — that step needs to happen
-      outside this sandbox.
+      cache. Two separate sessions have now confirmed this from the inside:
+      neither a general-purpose sandbox nor a session explicitly provisioned
+      for outbound network access could reach data vendor sites or download
+      anything (see "Getting the Phase 1 data" below) — this step needs a
+      human, outside any agent session, to buy/download the data and hand it
+      back.
 - [ ] Phase 2 — ICT feature detectors
 - [ ] Phase 3 — execution engine
 - [ ] Phase 4 — taught configs, frequency, verification
@@ -43,23 +46,52 @@ Read it before touching this repo. The short version:
 15+ years of clean, back-adjusted, roll-logged 1-minute CME futures data is a
 licensed commercial product, not something scrapable off the open web — that's
 why the spec lists it as an "already purchased" prerequisite. A coding session
-can't complete this step on your behalf (no agent session can reach these
-vendor sites, and buying data needs your own payment action anyway). Options,
-found via research, not independently verified against current pricing:
+can't complete this step on your behalf: buying data needs your own payment
+action regardless, and (as of 2026-08-08) even a session specifically
+provisioned with "trusted network access" found its actual egress fully
+blocked by policy — outbound HTTPS was denied to every external host tried,
+including inert ones like example.com and wikipedia.org, not just the data
+vendors. Only a server-side web-search tool (which returns summarized
+snippets, not raw pages, and can't download files) worked at all. So beyond
+what search snippets could confirm below, none of this has been verified by
+actually browsing the vendor sites, and no free sample was downloaded or
+validated against the pipeline — if a future session has real outbound
+network access, that's the first thing to check before attempting a
+download.
+
+Vendor details below reflect what could be confirmed via search as of
+2026-08-08; treat pricing/terms as needing a final human check at purchase
+time since they weren't loaded and read directly:
 
 - **Kibot** — "All Futures Continuous Contracts 1-Minute Intraday Data": 83
   symbols back to 2009, adjusted + raw unadjusted columns in one CSV schema,
-  **$520 one-time, no subscription**, free 3-month sample to check the format
-  before buying. Simplest, most concrete option. kibot.com
-- **Firstrate Data** — NQ continuous history back to 2008 (~15 years), with
-  three adjustment types including an **"Absolute-Adjusted" (points-based)**
-  series — the additive adjustment this project's own no-percentage rule
-  requires, as opposed to their ratio-adjusted variant. firstratedata.com
-- **Databento** — official CME data vendor (GLBX.MDP3), pay-as-you-go/metered
-  historical API, likely the most "correct" source but priced per query rather
-  than a flat one-time fee. databento.com
-- **CME DataMine** — the exchange's own first-party historical data platform;
-  more institutional/higher overhead to get set up with. cmegroup.com/datamine
+  **$520 one-time, no subscription** (confirmed). Kibot's general free-sample
+  program (kibot.com/free_historical_data.aspx) is documented as covering the
+  most recent ~3 months of 1-minute data for a couple of named equity/ETF
+  symbols (IBM, OIH) plus daily EOD for all US stocks/ETFs — whether the
+  *continuous futures* product page offers its own free ES/NQ sample distinct
+  from that, as previously assumed, was **not confirmed**; check the product
+  page directly before relying on a free futures sample existing. Simplest,
+  most concrete paid option either way. kibot.com
+- **Firstrate Data** — NQ continuous history confirmed back to **2008-01-02**
+  (~15+ years), with an **"Absolute-Adjusted" (points-based)** adjustment
+  option confirmed to exist — the additive adjustment this project's own
+  no-percentage rule requires, as opposed to their ratio-adjusted variant.
+  Pricing wasn't confirmed via search. firstratedata.com
+- **Databento** — official CME data vendor (GLBX.MDP3). Search results were
+  inconsistent/unclear on both pricing (mentions of a ~$179/mo "Standard"
+  plan alongside usage-based pricing) and historical depth (one blog result
+  referenced coverage "beginning September 25, 2025," which looks like it's
+  about a specific newly-added event-contract dataset rather than the general
+  OHLCV history — GLBX.MDP3 is understood to go back much further, but this
+  needs a direct page read to confirm). Don't trust either figure without
+  checking databento.com/datasets/GLBX.MDP3 directly. databento.com
+- **CME DataMine** — the exchange's own first-party historical data platform.
+  Confirmed: purchased online by credit card at cme.com/datamine, one-time or
+  1/12-month subscription per dataset, API-based delivery requiring a CME
+  Group Login + API ID; pricing varies by dataset/duration and isn't posted
+  publicly (contact dataminesales@cmegroup.com for a quote). More
+  institutional/higher setup overhead than the others. cmegroup.com/datamine
 
 Whichever you pick, the 6 files need to land in `ict_lab/data/raw/` matching
 the exact schema in Phase 1 of the spec (index = tz-aware UTC timestamps;
