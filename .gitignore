@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# Purchased/generated market data and derived artifacts — never commit these
+ict_lab/data/raw/*
+!ict_lab/data/raw/.gitkeep
+ict_lab/data/clean/*
+!ict_lab/data/clean/.gitkeep
+ict_lab/runs/*
+!ict_lab/runs/.gitkeep
+ict_lab/logs/*
+!ict_lab/logs/.gitkeep
+
+# Secrets — Gate API keys must live only in environment variables (Phase 9 PART D)
+.env
+.env.*
+*.pem
+*.key
+
+# OS/editor cruft
+.DS_Store
+.vscode/
+.idea/
