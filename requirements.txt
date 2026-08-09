@@ -5,3 +5,5 @@ scipy==1.17.1
 statsmodels==0.14.6
 pytest==9.1.1
 tzdata==2026.3
+matplotlib==3.11.1
+mplfinance==0.12.10b0

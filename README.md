@@ -36,7 +36,30 @@ Read it before touching this repo. The short version:
       sample can validate the pipeline but is far too short and too recent to
       be real research data (it's entirely inside the Phase 1 holdout window
       by definition).
-- [ ] Phase 2 — ICT feature detectors
+- [~] Phase 2 — ICT feature detectors: code-complete, 94 tests passing
+      (up from 24), including a dedicated no-lookahead harness
+      (`tests/test_no_lookahead.py`) that runs every detector on full data
+      vs. data truncated at a cutoff bar and asserts the outputs agree on
+      everything knowable by that cutoff. This harness caught and drove the
+      fix for several real bugs — most notably, multiple places treating
+      "the last bar we've seen for a session" as proof that session had
+      ended, when a session can still have bars left to print. Covers: FVG
+      (`features/fvg.py`, mitigation/fill tracked at 1m resolution),
+      N-bar fractal swings (`features/swings.py`), liquidity levels
+      (`features/liquidity.py`: prior session/RTH, pre-window, swing-based,
+      each gated on a time-based "is this period provably over" check, not
+      just "does a later grouping happen to exist yet"), sweeps
+      (`features/sweep.py`), displacement (`features/displacement.py`:
+      ATR-multiple and percentile versions), MSS
+      (`features/mss.py`, gated on already-confirmed swings only), HTF bias
+      (`features/bias.py`: none / prior-day / 15m-or-1h swing structure /
+      daily-MA-slope / perfect — the last one deliberately look-ahead and
+      flagged as such everywhere it appears), and a candlestick +
+      feature-overlay plotting function (`features/plotting.py`). The
+      "generate 15 random-day charts for visual review" step
+      (`generate_review_charts`) is wired up and tested structurally, but
+      there's nothing a human would recognize in synthetic random-walk
+      bars — running it for real still needs the Phase 1 data.
 - [ ] Phase 3 — execution engine
 - [ ] Phase 4 — taught configs, frequency, verification
 - [ ] Phase 5 — parameter sweep, nulls, statistics

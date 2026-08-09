@@ -7,12 +7,20 @@ import pandas as pd
 
 ET = ZoneInfo("America/New_York")
 
-_WINDOWS = {
+WINDOWS = {
     "rth": ("09:30", "16:00"),
     "killzone_london": ("03:00", "04:00"),
     "killzone_ny_am": ("10:00", "11:00"),
     "killzone_ny_pm": ("14:00", "15:00"),
 }
+
+# The completeness boundary for "is this session over" is 18:00 ET -- where
+# add_session_columns' rollover rule actually flips session_date -- not the
+# nominal 17:00 ET trading close. A bar can still print for this session
+# anywhere in 17:00-17:59 ET (real CME data usually won't have one there,
+# since that's the maintenance break, but nothing here should assume that
+# gap exists), and it still belongs to this session_date, not the next.
+SESSION_END_ET = "18:00"
 
 
 def to_eastern(index: pd.DatetimeIndex) -> pd.DatetimeIndex:
@@ -50,7 +58,30 @@ def add_session_columns(df: pd.DataFrame) -> pd.DataFrame:
     session_date = calendar_day.where(~is_evening, calendar_day + pd.Timedelta(days=1))
     out["session_date"] = session_date
 
-    for name, (start, end) in _WINDOWS.items():
+    for name, (start, end) in WINDOWS.items():
         out[name] = _window_mask(et_index, start, end)
 
     return out
+
+
+def complete_sessions(
+    session_dates: pd.DatetimeIndex, end_time: str, data_max: pd.Timestamp
+) -> pd.DatetimeIndex:
+    """Which of `session_dates` are provably over: data observed at or past
+    `end_time` ET on that session's own calendar date. Pass SESSION_END_ET
+    for a full session, or one of WINDOWS[...]'s end times for a sub-window
+    (e.g. WINDOWS["rth"][1]).
+
+    This is deliberately time-based rather than "does a later session/bar
+    exist yet": the gap between one RTH close and the next RTH open is ~17.5
+    hours, so "is there a later grouping in the data" and "has this session
+    actually ended" are NOT interchangeable checks -- a session can be fully
+    over long before any evidence of the next one shows up.
+    """
+    end_h, end_m = (int(x) for x in end_time.split(":"))
+    end_utc = (
+        pd.DatetimeIndex([d + pd.Timedelta(hours=end_h, minutes=end_m) for d in session_dates])
+        .tz_localize(ET, ambiguous="infer", nonexistent="shift_forward")
+        .tz_convert("UTC")
+    )
+    return session_dates[end_utc <= data_max]
