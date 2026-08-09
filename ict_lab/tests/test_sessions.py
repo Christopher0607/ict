@@ -3,7 +3,7 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from ict_lab.data.sessions import add_session_columns, to_eastern
+from ict_lab.data.sessions import _window_mask, add_session_columns, to_eastern
 
 
 def _bars_at_et_times(et_time_strings: list[str]) -> pd.DataFrame:
@@ -87,3 +87,27 @@ def test_killzones_do_not_overlap_and_match_expected_clock_times(synthetic_bars)
     assert ny_pm_hours == {14}
     assert 16 not in rth_hours  # 16:00 bar is the boundary, excluded (half-open window)
     assert not (london_hours & ny_am_hours & ny_pm_hours)
+
+
+def test_window_mask_handles_midnight_wraparound():
+    # None of WINDOWS' own entries cross midnight, but Phase 5's null-model
+    # "other hours" enumeration needs a 23:00-00:00 window to work.
+    et_index = to_eastern(
+        _bars_at_et_times(["2024-06-03 22:30", "2024-06-03 23:30", "2024-06-04 00:30"]).index
+    )
+    mask = _window_mask(et_index, "23:00", "00:00")
+    assert list(mask) == [False, True, False]
+
+
+def test_window_mask_full_day_when_start_equals_end():
+    et_index = to_eastern(
+        _bars_at_et_times(["2024-06-03 00:00", "2024-06-03 12:00", "2024-06-03 23:59"]).index
+    )
+    mask = _window_mask(et_index, "00:00", "00:00")
+    assert list(mask) == [True, True, True]
+
+
+def test_window_mask_non_wrapping_window_unaffected():
+    et_index = to_eastern(_bars_at_et_times(["2024-06-03 09:59", "2024-06-03 10:00", "2024-06-03 10:59", "2024-06-03 11:00"]).index)
+    mask = _window_mask(et_index, "10:00", "11:00")
+    assert list(mask) == [False, True, True, False]

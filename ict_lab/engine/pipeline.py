@@ -11,9 +11,16 @@ import pandas as pd
 
 from ict_lab.configs.strategy_config import COST_MODELS, StrategyConfig
 from ict_lab.configs.sweep_universe import resolve_sweep_universe_for_windows
+from ict_lab.data.sessions import add_session_columns
 from ict_lab.engine.execution import simulate_trades
 from ict_lab.engine.feature_store import FeatureStore
 from ict_lab.engine.signals import generate_signals
+
+
+def all_session_dates(df_1m: pd.DataFrame) -> pd.DatetimeIndex:
+    """Every calendar session_date present in the raw bars -- the universe
+    day-coverage/frequency statistics get measured against."""
+    return pd.DatetimeIndex(sorted(add_session_columns(df_1m)["session_date"].unique()))
 
 
 def sweep_level_types(config: StrategyConfig) -> tuple[str, ...]:

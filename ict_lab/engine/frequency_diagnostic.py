@@ -46,9 +46,8 @@ import pandas as pd
 from ict_lab.configs.grid import load_named_configs, placeholder_note
 from ict_lab.configs.strategy_config import StrategyConfig
 from ict_lab.data.loader import load_symbol
-from ict_lab.data.sessions import add_session_columns
 from ict_lab.engine.feature_store import FeatureStore
-from ict_lab.engine.pipeline import run_config
+from ict_lab.engine.pipeline import all_session_dates, run_config
 
 _NON_PNL_TRADE_COLUMNS = [
     "session_date", "symbol", "window", "direction", "setup_at",
@@ -58,12 +57,6 @@ _NON_PNL_TRADE_COLUMNS = [
 
 def _drop_pnl_columns(trades: pd.DataFrame) -> pd.DataFrame:
     return trades[[c for c in _NON_PNL_TRADE_COLUMNS if c in trades.columns]]
-
-
-def _all_session_dates(df_1m: pd.DataFrame) -> pd.DatetimeIndex:
-    """Every calendar session_date present in the raw bars -- the universe
-    day-coverage percentages are measured against."""
-    return pd.DatetimeIndex(sorted(add_session_columns(df_1m)["session_date"].unique()))
 
 
 def pct_windows_with_setup(signals: pd.DataFrame, no_signals: pd.DataFrame) -> pd.DataFrame:
@@ -96,10 +89,10 @@ def raw_setup_counts(signals: pd.DataFrame) -> pd.DataFrame:
     )
 
 
-def pct_days_with_trade(trades: pd.DataFrame, all_session_dates: pd.DatetimeIndex) -> pd.DataFrame:
+def pct_days_with_trade(trades: pd.DataFrame, session_dates: pd.DatetimeIndex) -> pd.DataFrame:
     """% of trading days (any window) with >=1 filled trade, by year. This
     is the CHECKPOINT's "number that matters"."""
-    all_days = pd.DataFrame({"session_date": all_session_dates})
+    all_days = pd.DataFrame({"session_date": session_dates})
     all_days["year"] = pd.DatetimeIndex(all_days["session_date"]).year
 
     traded_days = trades[["session_date"]].drop_duplicates().copy()
@@ -119,11 +112,11 @@ def trades_per_year(trades: pd.DataFrame) -> pd.DataFrame:
     return out.reset_index().sort_values("year", kind="mergesort").reset_index(drop=True)
 
 
-def trades_per_day_distribution(trades: pd.DataFrame, all_session_dates: pd.DatetimeIndex) -> pd.DataFrame:
+def trades_per_day_distribution(trades: pd.DataFrame, session_dates: pd.DatetimeIndex) -> pd.DataFrame:
     """Histogram of trades-per-day counts (0 included), for as_traded per
     the spec's explicit callout."""
     counts_by_day = trades.groupby("session_date").size()
-    full = counts_by_day.reindex(all_session_dates, fill_value=0)
+    full = counts_by_day.reindex(session_dates, fill_value=0)
     out = full.value_counts().rename("days").rename_axis("trades_per_day")
     return out.reset_index().sort_values("trades_per_day", kind="mergesort").reset_index(drop=True)
 
@@ -146,7 +139,7 @@ def atr_mult_sensitivity(
 ) -> pd.DataFrame:
     """Item (b): pct_days_with_trade (overall) at config's own
     fvg_min_size_atr_mult plus a couple of alternatives."""
-    all_days = _all_session_dates(df_1m)
+    all_days = all_session_dates(df_1m)
     mults = (config.fvg_min_size_atr_mult,) + tuple(m for m in alt_mults if m != config.fvg_min_size_atr_mult)
     store = FeatureStore(df_1m)  # shared: only fvg_min_size_atr_mult varies across these runs
     rows = []
@@ -168,7 +161,7 @@ def compute_frequency_diagnostic(
 ) -> dict:
     signals, no_signals, trades, no_trades = run_config(df_1m, config, symbol)
     trades = _drop_pnl_columns(trades)
-    all_days = _all_session_dates(df_1m)
+    all_days = all_session_dates(df_1m)
 
     result = {
         "config_name": config.name,

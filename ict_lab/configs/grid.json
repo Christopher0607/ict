@@ -60,5 +60,41 @@
   },
   "placeholders": {
     "as_traded": "as_traded (default placeholder, not yet user-specified)"
+  },
+  "sweep_axes": {
+    "windows": [
+      ["killzone_london"],
+      ["killzone_ny_am"],
+      ["killzone_ny_pm"],
+      ["killzone_london", "killzone_ny_am"],
+      ["killzone_london", "killzone_ny_pm"],
+      ["killzone_ny_am", "killzone_ny_pm"],
+      ["killzone_london", "killzone_ny_am", "killzone_ny_pm"]
+    ],
+    "bias_method": ["none", "prior_day", "swing_structure", "daily_ma_slope"],
+    "sweep_required": [true, false],
+    "sweep_universe": ["session_refs", "session_refs_plus_swings", "bsl_ssl_15m", "swings_only"],
+    "mss_required": [true, false],
+    "displacement_required": [true, false],
+    "fvg_timeframe": ["1m", "5m", "15m"],
+    "entry_level": ["proximal", "50%", "distal"],
+    "stop_type": ["swing", "gap_distal"],
+    "target_type": ["fixed_r", "next_liquidity"],
+    "max_trades_per_window": [1, 10]
+  },
+  "sweep_fixed": {
+    "sweep_k": 3,
+    "sweep_min_penetration_ticks": 1.0,
+    "displacement_atr_mult": 1.5,
+    "target_r_multiple": 2.0,
+    "target_fallback_r_multiple": 2.0,
+    "swing_n": 5,
+    "swing_15m_n": 5,
+    "stop_buffer_ticks": 1.0,
+    "bias_timeframe": "15m",
+    "bias_swing_n": 5,
+    "bias_ma_period": 20,
+    "fvg_min_size_points": 0.0,
+    "fvg_min_size_atr_mult": 0.0
   }
 }

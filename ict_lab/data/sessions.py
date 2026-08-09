@@ -12,6 +12,10 @@ WINDOWS = {
     "killzone_london": ("03:00", "04:00"),
     "killzone_ny_am": ("10:00", "11:00"),
     "killzone_ny_pm": ("14:00", "15:00"),
+    # start==end means "every bar" (see _window_mask's wrap handling) --
+    # Phase 5 Part 4's ablation ladder rung 1 needs a genuine full-session
+    # window (no window restriction at all, added only at rung 4).
+    "full_session": ("00:00", "00:00"),
 }
 
 # The completeness boundary for "is this session over" is 18:00 ET -- where
@@ -34,10 +38,17 @@ def _minute_of_day(index: pd.DatetimeIndex) -> np.ndarray:
 
 
 def _window_mask(index: pd.DatetimeIndex, start: str, end: str) -> np.ndarray:
+    """Half-open [start, end). end <= start means the window wraps past
+    midnight (e.g. 23:00-00:00) -- none of WINDOWS' own entries do this,
+    but Phase 5's null-model "other hours" enumeration needs it."""
     start_h, start_m = (int(x) for x in start.split(":"))
     end_h, end_m = (int(x) for x in end.split(":"))
     minute_of_day = _minute_of_day(index)
-    return (minute_of_day >= start_h * 60 + start_m) & (minute_of_day < end_h * 60 + end_m)
+    start_minute = start_h * 60 + start_m
+    end_minute = end_h * 60 + end_m
+    if end_minute <= start_minute:
+        return (minute_of_day >= start_minute) | (minute_of_day < end_minute)
+    return (minute_of_day >= start_minute) & (minute_of_day < end_minute)
 
 
 def add_session_columns(df: pd.DataFrame) -> pd.DataFrame:

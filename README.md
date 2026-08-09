@@ -195,7 +195,161 @@ Read it before touching this repo. The short version:
   similarly gated on real data for anything beyond code-completeness, so
   this project is holding at the Phase 4 CHECKPOINT until the purchase
   happens.
-- [ ] Phase 5 — parameter sweep, nulls, statistics
+- [~] Phase 5 — parameter sweep, nulls, statistics: code-complete, 366
+      tests passing (up from 279 before this phase). This is the heaviest
+      layer in the spec, and its own CHECKPOINT is unreachable here for
+      two independent reasons — see "Phase 5 cannot actually run in this
+      environment" below. Every part was still built fully and tested
+      against synthetic fixtures, the same discipline as every prior
+      phase's data-gated work.
+      - **Part 0** (`configs/sweep_grid.py`, `engine/sweep_benchmark.py`):
+        `configs/grid.json` gained a `sweep_axes` section (window subsets,
+        `bias_method` excluding `perfect`, `sweep_required`/`universe`,
+        `mss_required`, `displacement_required`, `fvg_timeframe`,
+        `entry_level`, `stop_type` restricted to swing/gap_distal,
+        `target_type` restricted to fixed_r/next_liquidity, and
+        `max_trades_per_window` ∈ {1, 10}) and a `sweep_fixed` section for
+        the dial parameters deliberately left unswept — the spec names
+        only three axes explicitly; the rest are documented, scoped
+        choices, not silent assumptions. Enumeration → canonicalization
+        (nulls dead parameters given a config's own state, e.g.
+        `sweep_universe` when `sweep_required=False`) → dedup on a
+        content hash (excluding `name`) takes the real grid from 64,512
+        raw combinations to 48,384 valid to **36,288 canonical**. The
+        benchmark samples 50 canonical configs through the full pipeline
+        (fresh `FeatureStore` per config — the conservative, no-
+        cross-config-caching number) and the sizing rule
+        (`N = min(25000, floor(90min·workers / median_sec))`) decides
+        whether Part 1 can even run — this is the spec's explicit
+        **STOP for my go-ahead before launching**, and nothing in
+        `engine/sweep_orchestrator.py` bypasses it: launching Part 1
+        needs a second invocation with `--confirm-launch`, a human flag,
+        never inferred.
+      - **Part 1** (`engine/sweep_runner.py`): a `ProcessPoolExecutor`
+        runs one config's full pipeline per task; completed rows flush to
+        shard parquet every 500 configs (checkpointing — a restart skips
+        hashes already in a shard) with a progress/ETA line at the same
+        cadence. The one-row-per-config summary schema is exactly the
+        spec's list (trade count, trades/year, day coverage, win rate,
+        avg/total R, gross/net PnL and Sharpe, max drawdown in R and
+        dollars, profit factor, ambiguous-bar/roll-day percentages,
+        first/last trade dates), plus a `config_hash`/params. Net Sharpe
+        is annualized from the daily net-PnL series with no-trade days as
+        zero, stated once here as the project-wide convention. A real,
+        reproducible bug surfaced while building this: **parquet
+        round-trips Python tuples as numpy arrays and `None` as `NaN`**,
+        which would have silently corrupted any config rebuilt from a
+        shard (needed for Part 2's ES reruns) — `windows`/
+        `sweep_level_types` are now JSON-encoded and `sweep_universe`'s
+        `None` is written as `""`, with `config_from_row` undoing both
+        and normalizing numpy scalars back to native types so a
+        round-tripped config's canonical hash matches the original's
+        exactly (tested, not just assumed). A lightweight companion
+        r_multiples shard (config_hash → JSON trade-R-sequence) rides
+        alongside the summary shard, captured for free during the same
+        pipeline run, since Part 2's FDR stage needs every config's raw
+        trade sequence, not just its aggregate stats.
+      - **Part 2** (`engine/funnel.py`): the five stages in order — min
+        100 trades, net PnL > 0, net Sharpe ≥ 0.5, then Benjamini-Hochberg
+        FDR at 10% computed across the **full sampled population**, not
+        just the pre-filtered survivors of the earlier stages (correcting
+        only against a cherry-picked shortlist would understate how many
+        hypotheses were actually tried and defeat the point of FDR
+        control). Per-config p-values come from a vectorized-across-
+        resamples stationary block bootstrap (1000 resamples, Politis &
+        Romano) on the trade-R sequence; a timed sample projects the
+        full-population wall-clock cost first, and if that projection
+        exceeds the 15-minute budget the *entire* population falls back
+        to a one-sided t-test instead — one consistent method throughout,
+        since mixing methods within a single correction would make the
+        p-values incomparable, with the method actually used reported
+        alongside the result. ES validation reruns every survivor plus
+        the three named configs cold (a fresh, ES-only `FeatureStore`,
+        never sharing state with anything NQ-derived).
+      - **Part 3** (`engine/null_models.py`): three null generators for
+        the reference set (as_taught_5m/1m, as_traded, best realistic
+        survivor, one median-Sharpe population config) — random-entry
+        (coin-flip direction at a uniform random minute in the same
+        window/day, real trade's stop/target point-distances copied and
+        re-simulated via execution.py's own exit logic), other-hours
+        (the config's real, unchanged logic re-run one hour at a time
+        across ~20 non-overlapping 60-minute windows excluding the
+        config's own killzones), and shuffled-direction (real trades,
+        each direction flipped p=0.5, fills only re-simulated). The
+        "other hours" test needed `_window_mask` (sessions.py) fixed for
+        midnight-wraparound windows (e.g. 23:00-00:00), a real gap that
+        happened to never matter until a window needed to cross
+        midnight — backward-compatible, since none of the standard
+        killzones wrap. Every null test shares one `FeatureStore` across
+        its ~20 hour variants (detector caches key on parameters, never
+        window boundaries), cutting that stage from ~13s to ~2s per
+        reference config in testing.
+      - **Part 4** (`engine/ablation.py`): the six-rung ladder (FVG-only →
+        +sweep → +displacement → +window restriction → +15m bias
+        [= the real as_taught_5m, verified by hash equality in a
+        dedicated test] → +perfect bias, labeled LOOKAHEAD), holding
+        every as_taught_5m parameter fixed except the four the spec
+        names, so the table isolates exactly those four gates. Building
+        this hit a **real, previously-latent bug in Phase 3's
+        `execution.py`**: `next_liquidity` targeting's "already swept"
+        filter used `DataFrame.apply(..., axis=1)`, which on a zero-row
+        frame silently returns a misaligned, non-boolean empty Series
+        instead of an empty boolean mask — collapsing the candidates
+        frame to zero *columns*, not just zero rows, and crashing a few
+        lines later. No prior phase's tests happened to hit the empty-
+        candidates case; rung 1's `full_session` window (also newly
+        added, permanently, to `sessions.WINDOWS`) did. Fixed with a
+        vectorized `MultiIndex.isin` check and a regression test.
+      - **Part 5** (`engine/discretion_premium.py`): every-setup vs.
+        hindsight-perfect-skip-all-losers vs. the minimum fraction of
+        losers a trader would need to skip (worst-loss-first, the
+        provably optimal order) to reach breakeven net PnL or 1.0 net
+        Sharpe — a plain search over that ordering, since Sharpe depends
+        on the whole daily distribution, not a running total.
+      - **Part 6** (`engine/statistics_slices.py`): Deflated Sharpe Ratio
+        (Bailey & López de Prado) computed **entirely at the trade level**
+        for internal consistency — observed Sharpe, cross-config Sharpe
+        spread, and skew/kurtosis all from each config's own r_multiple
+        sequence, since the spec's "trade-level skew and kurtosis" would
+        otherwise sit awkwardly against a daily-annualized Sharpe on a
+        different scale; kurtosis is raw (Pearson, normal=3), matching
+        the paper's Gaussian asymptotic-variance formula (checked against
+        it directly). Per-year tables, the 2010-2021 vs.
+        2022-to-holdout-cutoff era split, roll-day sensitivity, and
+        analytic (no re-simulation) slippage sensitivity at 0/1/2/3 stop
+        ticks and 0/1/2 time-exit ticks — the latter by algebraically
+        shifting only the affected trades' exit price by the tick delta
+        and re-deriving PnL/R, not touching anything else.
+      - **Part 7** (`engine/summary_pack.py`, `engine/sweep_orchestrator.py`):
+        writes all ten spec-named files to `analysis/summary/`.
+        `results_configs.csv` is Part 1's full per-config table by
+        design (the spec names it as the sweep's raw output) and isn't
+        itself "small enough to paste into a chat" at full sweep size —
+        that qualifier reads as applying to the other nine genuinely
+        summary-shaped files. The orchestrator CLI wires Parts 0-7 in
+        order, never silently drops a stage, never touches
+        `ict_lab/data/holdout.py` (checked directly, not just asserted),
+        and never mutates the grid after seeing a result. A full,
+        synthetic-data dry run of the entire Parts 1-7 pipeline (tiny
+        population, 5 null-test iterations) is exercised end-to-end as an
+        integration test, since a wiring mistake anywhere in a pipeline
+        this size is far more likely to surface from actually running it
+        than from unit-testing each piece in isolation — and it's exactly
+        this test that caught both bugs described above.
+
+  **Phase 5 cannot actually run in this environment, for two independent
+  reasons.** First, the familiar one: `ict_lab/data/raw/` still has no
+  purchased data, the same block as every prior phase's real-data work.
+  Second, and new here: even setting data aside, **this sandbox's own
+  throughput fails the spec's sizing rule.** A real benchmark run in this
+  container measured a median 2.6s/config against 4 CPUs, giving
+  `N = floor(90·60·4 / 2.6) ≈ 8,300` — below the spec's own
+  `N ≥ 10,000` minimum, meaning the sizing rule *itself*, exactly as
+  built, says **do not run** and calls for optimizing the pipeline first
+  rather than proceeding. That's not a data problem; it's this
+  environment's compute. The code took that answer at face value instead
+  of working around it. Phases 6 onward remain similarly gated until both
+  the data and adequate compute exist.
 - [ ] Phase 6 — results dashboard
 - [ ] Phase 7 — reporting pass
 - [ ] Phase 8 — holdout (run once)

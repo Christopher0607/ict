@@ -133,10 +133,19 @@ def _target_price(
     if not sweeps.empty:
         already_swept = sweeps.loc[sweeps["confirmed_at"] <= entry_at, ["level_type", "level_price"]]
         if not already_swept.empty:
-            swept_keys = set(zip(already_swept["level_type"], already_swept["level_price"]))
-            candidates = candidates[
-                ~candidates.apply(lambda r: (r["level_type"], r["price"]) in swept_keys, axis=1)
-            ]
+            # NOT candidates.apply(..., axis=1): DataFrame.apply on a
+            # zero-row frame can't infer a per-row output and silently
+            # returns an empty float64 Series with a fresh, misaligned
+            # index instead of an empty bool Series matching candidates'
+            # own index -- the subsequent boolean-mask indexing then
+            # collapses candidates to zero COLUMNS, not just zero rows.
+            # MultiIndex.isin sidesteps row-wise apply entirely and
+            # handles the empty case correctly.
+            already_swept_index = pd.MultiIndex.from_frame(
+                already_swept.rename(columns={"level_price": "price"})
+            )
+            candidate_index = pd.MultiIndex.from_frame(candidates[["level_type", "price"]])
+            candidates = candidates[~candidate_index.isin(already_swept_index)]
     if direction == "bullish":
         candidates = candidates[candidates["price"] > entry_price]
         chosen = candidates["price"].min() if not candidates.empty else None
@@ -151,7 +160,7 @@ def _target_price(
     return _snap_to_tick(chosen, tick_size), None
 
 
-def _simulate_exit(
+def simulate_exit(
     direction: str,
     entry_at: pd.Timestamp,
     entry_price: float,
@@ -309,7 +318,7 @@ def simulate_trades(
                 direction, entry_price, stop_price, config, tick_size, levels, sweeps, entry_at,
                 target_level_types,
             )
-            exit_result = _simulate_exit(
+            exit_result = simulate_exit(
                 direction,
                 entry_at,
                 entry_price,

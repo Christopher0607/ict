@@ -12,7 +12,7 @@ from ict_lab.engine.execution import (
     _entry_price,
     _mae_mfe,
     _simulate_entry,
-    _simulate_exit,
+    simulate_exit,
     _snap_to_tick,
     _stop_price,
     _target_price,
@@ -181,6 +181,28 @@ def test_target_next_liquidity_skips_already_swept_level():
     assert price == 105.0
 
 
+def test_target_next_liquidity_empty_candidates_with_nonempty_sweeps_does_not_crash():
+    # Regression: target_level_types narrowing candidates down to zero rows
+    # while sweeps is still non-empty used to hit a pandas gotcha --
+    # DataFrame.apply(axis=1) on a zero-row frame returns a misaligned,
+    # non-boolean empty Series, which collapsed candidates to zero COLUMNS
+    # (not just zero rows) and raised KeyError('price') a few lines later.
+    entry_at = pd.Timestamp("2024-06-03 14:10:00", tz="UTC")
+    levels = pd.DataFrame(
+        [{"level_type": "swing_high", "session_date": pd.Timestamp("2024-06-03"), "price": 105.0, "knowable_at": entry_at - pd.Timedelta(minutes=5)}]
+    )
+    sweeps = pd.DataFrame(
+        [{"level_type": "prior_session_high", "level_price": 103.0, "confirmed_at": entry_at - pd.Timedelta(minutes=1)}]
+    )
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False, target_type="next_liquidity")
+    # target_level_types excludes the only level actually present (swing_high) -> candidates is empty
+    # before the sweeps filter even runs, but sweeps itself is non-empty.
+    price, _ = _target_price(
+        "bullish", 100.0, 98.0, config, 0.25, levels, sweeps, entry_at, target_level_types=("prior_session_high",)
+    )
+    assert price == 100.0 + config.target_fallback_r_multiple * 2.0  # no candidate qualifies -> R fallback
+
+
 def test_target_next_liquidity_respects_target_level_types_narrowing():
     # Phase 4 item 3: "next opposing liquidity must draw from the same
     # preset the sweep uses" -- target_level_types narrows the candidate
@@ -227,7 +249,7 @@ def test_exit_stop_only():
     rows = [{"open": 100, "high": 100.2, "low": 99.4, "close": 99.8}]  # low breaches stop 99.5
     df = _bars(rows)
     entry_at = df.index[0] - pd.Timedelta(minutes=1)
-    result = _simulate_exit("bullish", entry_at, 100.0, stop_price=99.5, target_price=105.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
+    result = simulate_exit("bullish", entry_at, 100.0, stop_price=99.5, target_price=105.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
     assert result["exit_reason"] == "stop"
     assert result["ambiguous_bar"] is False
     assert result["exit_price"] == 99.25  # stop (on-grid) minus 1 tick of slippage
@@ -237,7 +259,7 @@ def test_exit_target_only_no_slippage():
     rows = [{"open": 100, "high": 105.2, "low": 99.9, "close": 105.0}]
     df = _bars(rows)
     entry_at = df.index[0] - pd.Timedelta(minutes=1)
-    result = _simulate_exit("bullish", entry_at, 100.0, stop_price=95.0, target_price=105.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
+    result = simulate_exit("bullish", entry_at, 100.0, stop_price=95.0, target_price=105.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
     assert result["exit_reason"] == "target"
     assert result["exit_price"] == 105.0  # exact, no slippage
 
@@ -246,7 +268,7 @@ def test_exit_ambiguous_bar_stop_always_wins():
     rows = [{"open": 100, "high": 105.2, "low": 94.9, "close": 100}]  # crosses both stop and target
     df = _bars(rows)
     entry_at = df.index[0] - pd.Timedelta(minutes=1)
-    result = _simulate_exit("bullish", entry_at, 100.0, stop_price=95.0, target_price=105.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
+    result = simulate_exit("bullish", entry_at, 100.0, stop_price=95.0, target_price=105.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
     assert result["exit_reason"] == "stop"
     assert result["ambiguous_bar"] is True
 
@@ -255,7 +277,7 @@ def test_exit_hard_exit_when_nothing_triggers():
     rows = [{"open": 100, "high": 100.5, "low": 99.7, "close": 100.2} for _ in range(3)]
     df = _bars(rows)
     entry_at = df.index[0] - pd.Timedelta(minutes=1)
-    result = _simulate_exit("bullish", entry_at, 100.0, stop_price=90.0, target_price=110.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
+    result = simulate_exit("bullish", entry_at, 100.0, stop_price=90.0, target_price=110.0, target_time_bars=None, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
     assert result["exit_reason"] == "hard_exit"
     assert result["exit_at"] == df.index[-1]
     assert result["exit_price"] == df["close"].iloc[-1]
@@ -266,7 +288,7 @@ def test_exit_target_time_exits_at_nth_bar_close():
     rows = [{"open": 100, "high": 100.5, "low": 99.7, "close": 100 + i * 0.1} for i in range(5)]
     df = _bars(rows)
     entry_at = df.index[0] - pd.Timedelta(minutes=1)
-    result = _simulate_exit("bullish", entry_at, 100.0, stop_price=90.0, target_price=110.0, target_time_bars=3, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
+    result = simulate_exit("bullish", entry_at, 100.0, stop_price=90.0, target_price=110.0, target_time_bars=3, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
     assert result["exit_reason"] == "target_time"
     assert result["exit_at"] == df.index[2]  # 3rd bar after entry
     assert result["exit_price"] == df["close"].iloc[2]
@@ -279,7 +301,7 @@ def test_exit_price_target_beats_time_target_at_same_bar():
     ]
     df = _bars(rows)
     entry_at = df.index[0] - pd.Timedelta(minutes=1)
-    result = _simulate_exit("bullish", entry_at, 100.0, stop_price=90.0, target_price=105.0, target_time_bars=2, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
+    result = simulate_exit("bullish", entry_at, 100.0, stop_price=90.0, target_price=105.0, target_time_bars=2, hard_exit_at=df.index[-1], session_bars=df, tick_size=0.25, stop_slippage_ticks=1)
     assert result["exit_reason"] == "target"
 
 
