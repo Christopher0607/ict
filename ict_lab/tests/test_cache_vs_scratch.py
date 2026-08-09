@@ -9,20 +9,24 @@ missing a parameter (or two different parameter combinations collided onto
 the same key), an earlier config's cached entry could leak into a later
 config's results under "cache" but not "scratch" -- this is exactly the bug
 class this check exists to catch.
+
+A 4th config (multi-window, sweep_universe, max_trades_per_window>1) was
+added on top of the spec's original 3 to cover Phase 4's new knobs the same
+way.
 """
 from __future__ import annotations
 
 import pandas as pd
 
 from ict_lab.configs.strategy_config import StrategyConfig
-from ict_lab.engine.execution import simulate_trades
 from ict_lab.engine.feature_store import FeatureStore
+from ict_lab.engine.pipeline import run_config
 from ict_lab.engine.signals import generate_signals
 
 CONFIGS = [
     StrategyConfig(
         name="a",
-        window="killzone_ny_am",
+        windows=("killzone_ny_am",),
         fvg_timeframe="5m",
         swing_n=5,
         sweep_required=True,
@@ -36,7 +40,7 @@ CONFIGS = [
     ),
     StrategyConfig(
         name="b",
-        window="killzone_ny_pm",
+        windows=("killzone_ny_pm",),
         fvg_timeframe="1m",
         swing_n=3,
         sweep_required=True,
@@ -49,7 +53,7 @@ CONFIGS = [
     ),
     StrategyConfig(
         name="c",
-        window="killzone_london",
+        windows=("killzone_london",),
         fvg_timeframe="15m",
         swing_n=7,
         sweep_required=True,
@@ -61,18 +65,27 @@ CONFIGS = [
         target_type="fixed_r",
         target_r_multiple=1,
     ),
+    StrategyConfig(
+        name="d",
+        windows=("killzone_ny_am", "killzone_ny_pm"),
+        fvg_timeframe="5m",
+        swing_n=5,
+        sweep_required=True,
+        sweep_universe="session_refs_plus_swings",
+        displacement_required=True,
+        displacement_atr_mult=1.5,
+        bias_method="none",
+        stop_type="swing",
+        target_type="fixed_r",
+        target_r_multiple=2,
+        max_trades_per_window=3,
+    ),
 ]
 
 
 def _run(store: FeatureStore, config: StrategyConfig):
-    signals, no_signals = generate_signals(store, config, tick_size=0.25)
-    levels = store.liquidity_levels(config.swing_n)
-    sweeps = (
-        store.sweeps(config.swing_n, config.sweep_level_types, config.sweep_k, config.sweep_min_penetration_ticks, 0.25)
-        if config.sweep_required
-        else pd.DataFrame()
-    )
-    return simulate_trades(signals, no_signals, config, "NQ", store.df_1m, levels, sweeps)
+    _, _, trades, no_trades = run_config(store.df_1m, config, "NQ", store=store)
+    return trades, no_trades
 
 
 def test_cache_vs_scratch_identical_trade_and_no_trade_logs(synthetic_bars):

@@ -3,6 +3,7 @@ from __future__ import annotations
 import pandas as pd
 
 from ict_lab.data.sessions import SESSION_END_ET, WINDOWS, add_session_columns, complete_sessions, to_eastern
+from ict_lab.features.resample import resample_ohlcv
 from ict_lab.features.swings import swing_points
 
 LEVEL_COLUMNS = ["level_type", "session_date", "price", "knowable_at"]
@@ -105,19 +106,38 @@ def pre_window_levels(df: pd.DataFrame, window: str) -> pd.DataFrame:
     )[LEVEL_COLUMNS]
 
 
-def swing_levels(df: pd.DataFrame, n: int = 5) -> pd.DataFrame:
-    """Swing highs/lows as liquidity levels, knowable once the fractal confirms."""
-    swings = swing_points(df, n=n)
+def swing_levels(df: pd.DataFrame, n: int = 5, timeframe: str = "1m") -> pd.DataFrame:
+    """Swing highs/lows as liquidity levels, knowable once the fractal
+    confirms. timeframe="1m" uses raw bars directly; any other timeframe
+    resamples first and remaps confirmed_at through the resampled bars' own
+    knowable_at column -- a resampled bar's left-labeled timestamp is not
+    when it's actually knowable, same reasoning as bias_swing_structure.
+    Non-1m level types get a `_{timeframe}` suffix (e.g. swing_high_15m) so
+    they're independently selectable by a sweep-universe preset.
+    """
+    if timeframe == "1m":
+        swings = swing_points(df, n=n)
+        confirmed_at = swings["confirmed_at"] if not swings.empty else None
+    else:
+        bars = resample_ohlcv(df, timeframe)
+        swings = swing_points(bars, n=n)
+        confirmed_at = (
+            bars["knowable_at"].to_numpy()[swings["confirmed_at_index"].to_numpy()]
+            if not swings.empty
+            else None
+        )
+
     if swings.empty:
         return pd.DataFrame(columns=LEVEL_COLUMNS)
 
+    suffix = "" if timeframe == "1m" else f"_{timeframe}"
     session_of = add_session_columns(df)["session_date"]
     return pd.DataFrame(
         {
-            "level_type": swings["kind"].map({"high": "swing_high", "low": "swing_low"}),
+            "level_type": swings["kind"].map({"high": f"swing_high{suffix}", "low": f"swing_low{suffix}"}),
             "session_date": session_of.reindex(swings["timestamp"].to_numpy()).to_numpy(),
             "price": swings["price"],
-            "knowable_at": swings["confirmed_at"],
+            "knowable_at": confirmed_at,
         }
     )[LEVEL_COLUMNS]
 
@@ -126,13 +146,19 @@ def all_liquidity_levels(
     df: pd.DataFrame,
     pre_windows: list[str] = ("killzone_london", "killzone_ny_am", "killzone_ny_pm"),
     swing_n: int = 5,
+    swing_15m_n: int = 5,
 ) -> pd.DataFrame:
     """Every level type combined, sorted by when each became knowable. Levels
     don't carry an "active" flag here -- that's sweep.py's job: a level stays
     a valid reference until sweep detection finds the first bar that trades
     through it.
     """
-    parts = [prior_session_levels(df), prior_rth_levels(df), swing_levels(df, n=swing_n)]
+    parts = [
+        prior_session_levels(df),
+        prior_rth_levels(df),
+        swing_levels(df, n=swing_n, timeframe="1m"),
+        swing_levels(df, n=swing_15m_n, timeframe="15m"),
+    ]
     parts += [pre_window_levels(df, w) for w in pre_windows]
     combined = pd.concat(parts, ignore_index=True)
     # kind="mergesort": stable. prior_session_high/low always share an

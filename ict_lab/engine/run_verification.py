@@ -1,11 +1,16 @@
-"""Phase 3 VERIFICATION item 1: run the consensus config on one month of
-NQ, printing every trade with its surrounding bars so entries and exits can
-be hand-checked by eye.
+"""Phase 3 VERIFICATION item 1: run a config on one month of NQ, printing
+every trade with its surrounding bars so entries and exits can be
+hand-checked by eye.
 
     python -m ict_lab.engine.run_verification --start 2015-03-01 --end 2015-04-01
 
 Needs the real purchased NQ data in ict_lab/data/raw/ -- there is nothing
 meaningful to hand-verify against synthetic random-walk bars.
+
+Defaults to Phase 4's as_taught_5m (configs/grid.json) rather than Phase 3's
+CONSENSUS_CONFIG, per "NAMED CONFIGS in configs/grid.json (replacing the old
+consensus definitions)" -- CONSENSUS_CONFIG itself stays defined since
+Phase 3's own verification and tests still pin its exact values.
 """
 from __future__ import annotations
 
@@ -13,11 +18,12 @@ import argparse
 
 import pandas as pd
 
-from ict_lab.configs.strategy_config import COST_MODELS, CONSENSUS_CONFIG, StrategyConfig
+from ict_lab.configs.grid import load_named_configs, placeholder_note
+from ict_lab.configs.strategy_config import StrategyConfig
 from ict_lab.data.loader import load_symbol
-from ict_lab.engine.execution import simulate_trades
-from ict_lab.engine.feature_store import FeatureStore
-from ict_lab.engine.signals import generate_signals
+from ict_lab.engine.pipeline import run_config
+
+DEFAULT_CONFIG = load_named_configs()["as_taught_5m"]
 
 
 def _as_utc(ts: str) -> pd.Timestamp:
@@ -25,24 +31,18 @@ def _as_utc(ts: str) -> pd.Timestamp:
     return t.tz_localize("UTC") if t.tzinfo is None else t
 
 
-def run(symbol: str, start: str, end: str, config: StrategyConfig = CONSENSUS_CONFIG, context_bars: int = 5) -> None:
+def run(symbol: str, start: str, end: str, config: StrategyConfig = DEFAULT_CONFIG, context_bars: int = 5) -> None:
     df = load_symbol(symbol, price_series="backadjusted")
     df = df.loc[_as_utc(start) : _as_utc(end)]
     if df.empty:
         raise ValueError(f"No {symbol} data in [{start}, {end}] outside the holdout -- check the range.")
 
-    tick_size = COST_MODELS[symbol].tick_size
-    store = FeatureStore(df)
-    signals, no_signals = generate_signals(store, config, tick_size=tick_size)
-    levels = store.liquidity_levels(config.swing_n)
-    sweeps = (
-        store.sweeps(config.swing_n, config.sweep_level_types, config.sweep_k, config.sweep_min_penetration_ticks, tick_size)
-        if config.sweep_required
-        else pd.DataFrame()
-    )
-    trades, no_trades = simulate_trades(signals, no_signals, config, symbol, df, levels, sweeps)
+    signals, no_signals, trades, no_trades = run_config(df, config, symbol)
 
     print(f"=== {symbol} {start} .. {end}, config={config.name!r} ===")
+    note = placeholder_note(config.name)
+    if note:
+        print(f"*** {note} ***")
     print(f"signals: {len(signals)}  no_signals: {len(no_signals)}")
     print(f"trades: {len(trades)}  no_trades: {len(no_trades)}")
     if not no_trades.empty:

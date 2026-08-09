@@ -34,6 +34,7 @@ def _store_with_stubs(df_1m, config, tick_size, **stubs):
         key = (
             "sweeps",
             config.swing_n,
+            config.swing_15m_n,
             tuple(sorted(config.sweep_level_types)),
             config.sweep_k,
             config.sweep_min_penetration_ticks,
@@ -45,7 +46,7 @@ def _store_with_stubs(df_1m, config, tick_size, **stubs):
     if "displacement" in stubs:
         store._cache[("displacement_atr", config.displacement_atr_mult)] = stubs["displacement"]
     if "bias" in stubs:
-        key = ("bias", config.bias_method, config.bias_timeframe, config.bias_swing_n, config.bias_ma_period, config.window)
+        key = ("bias", config.bias_method, config.bias_timeframe, config.bias_swing_n, config.bias_ma_period, WINDOW)
         store._cache[key] = stubs["bias"]
     return store
 
@@ -78,29 +79,34 @@ def _sweep_row(swept_direction, confirmed_at, level_type="prior_session_low", le
 
 def _no_gates_config(**overrides):
     kwargs = dict(
-        name="t", window=WINDOW, bias_method="none", sweep_required=False,
+        name="t", windows=(WINDOW,), bias_method="none", sweep_required=False,
         mss_required=False, displacement_required=False, stop_type="gap_distal",
     )
     kwargs.update(overrides)
     return StrategyConfig(**kwargs)
 
 
-def test_all_gates_off_takes_first_fvg_in_either_direction():
+def test_all_gates_off_returns_every_fvg_in_either_direction_sorted_by_time():
+    # Phase 4: signals.py emits every direction-matching FVG uncapped (capping
+    # is execution.py's job) -- both the earlier bullish and later bearish FVG
+    # become their own signal row, in knowable_at order.
     config = _no_gates_config()
     fvgs = pd.DataFrame(
         [
             _fvg_row("bearish", WINDOW_START + pd.Timedelta(minutes=10)),
-            _fvg_row("bullish", WINDOW_START + pd.Timedelta(minutes=5)),  # earlier -> should win
+            _fvg_row("bullish", WINDOW_START + pd.Timedelta(minutes=5)),  # earlier -> sorts first
         ]
     )
     store = _store_with_stubs(_flat_bars(), config, 0.25, fvgs=fvgs)
 
     signals, no_signals = generate_signals(store, config, tick_size=0.25)
     assert len(no_signals) == 0
-    assert len(signals) == 1
-    row = signals.iloc[0]
-    assert row["direction"] == "bullish"
-    assert row["setup_at"] == WINDOW_START + pd.Timedelta(minutes=5)
+    assert len(signals) == 2
+    assert list(signals["direction"]) == ["bullish", "bearish"]
+    assert list(signals["setup_at"]) == [
+        WINDOW_START + pd.Timedelta(minutes=5),
+        WINDOW_START + pd.Timedelta(minutes=10),
+    ]
 
 
 def test_no_fvg_at_all_produces_no_fvg_reason():
@@ -262,7 +268,10 @@ def test_no_mss_produces_no_mss_reason():
     assert no_signals.iloc[0]["reason"] == "no_mss"
 
 
-def test_at_most_one_signal_row_per_session():
+def test_every_matching_fvg_becomes_its_own_signal_uncapped():
+    # No cap is applied here even though there are more FVGs than any
+    # max_trades_per_window would allow -- that enforcement is execution.py's
+    # job, since only it knows which setups actually fill.
     config = _no_gates_config()
     fvgs = pd.DataFrame(
         [_fvg_row("bullish", WINDOW_START + pd.Timedelta(minutes=t)) for t in (2, 5, 8, 12)]
@@ -270,7 +279,44 @@ def test_at_most_one_signal_row_per_session():
     store = _store_with_stubs(_flat_bars(), config, 0.25, fvgs=fvgs)
 
     signals, _ = generate_signals(store, config, tick_size=0.25)
-    assert len(signals[signals["session_date"] == SESSION_DATE]) == 1
+    session_signals = signals[signals["session_date"] == SESSION_DATE]
+    assert len(session_signals) == 4
+    assert list(session_signals["setup_at"]) == [
+        WINDOW_START + pd.Timedelta(minutes=t) for t in (2, 5, 8, 12)
+    ]
+
+
+def test_multiple_windows_evaluated_independently_within_a_session():
+    # killzone_london (03:00-04:00 ET == 07:00-07:59 UTC) and killzone_ny_am
+    # (14:00-14:59 UTC) each get their own bias/sweep/MSS/displacement chain
+    # and their own FVG search -- an FVG that only falls inside one window's
+    # bar range must not leak into the other window's signal.
+    other_window = "killzone_london"
+    other_start = pd.Timestamp("2024-06-03 07:00:00", tz="UTC")
+    idx = pd.date_range("2024-06-03 06:50:00", "2024-06-03 15:10:00", freq="1min", tz="UTC", inclusive="left")
+    df = pd.DataFrame(
+        {"open": 100.0, "high": 100.5, "low": 99.5, "close": 100.0, "volume": 10, "contract": "X"}, index=idx
+    )
+    config = _no_gates_config(windows=(other_window, WINDOW))
+    fvgs = pd.DataFrame(
+        [
+            _fvg_row("bullish", other_start + pd.Timedelta(minutes=5)),
+            _fvg_row("bearish", WINDOW_START + pd.Timedelta(minutes=7)),
+        ]
+    )
+    store = _store_with_stubs(df, config, 0.25, fvgs=fvgs)
+
+    signals, no_signals = generate_signals(store, config, tick_size=0.25)
+    assert no_signals.empty
+    assert set(signals["window"]) == {other_window, WINDOW}
+
+    london_row = signals[signals["window"] == other_window].iloc[0]
+    assert london_row["direction"] == "bullish"
+    assert london_row["setup_at"] == other_start + pd.Timedelta(minutes=5)
+
+    nyam_row = signals[signals["window"] == WINDOW].iloc[0]
+    assert nyam_row["direction"] == "bearish"
+    assert nyam_row["setup_at"] == WINDOW_START + pd.Timedelta(minutes=7)
 
 
 def test_sessions_without_window_bars_produce_no_row_at_all():

@@ -98,7 +98,103 @@ Read it before touching this repo. The short version:
         bars for hand-checking, per Phase 3's VERIFICATION item 1. Ready
         to run for real; still blocked on the Phase 1 data the same way
         everything else has been.
-- [ ] Phase 4 — taught configs, frequency, verification
+- [~] Phase 4 — taught configs, frequency, verification: code-complete,
+      212 tests passing (up from 163). The frequency diagnostic's actual
+      CHECKPOINT is blocked on real data the same way Phase 3's
+      verification was — see "Phase 4's CHECKPOINT is not yet met" below.
+      - **Multiple trades per window** (item 1): `engine/signals.py` now
+        emits *every* direction-matching FVG after a qualifying sweep/
+        displacement chain, uncapped — capping moved to
+        `engine/execution.py`, since only execution knows which setups
+        actually fill. `simulate_trades` groups signals by
+        `(session_date, window)`, walks them in `setup_at` order tracking
+        a "position open until" timestamp, and skips (as its own logged
+        no-trade row — `position_open` or `max_trades_reached`) any setup
+        that lands at-or-before the open position's exit or once
+        `config.max_trades_per_window` is reached. An entry that never
+        fills does not block later setups: the clock only advances on an
+        actual fill.
+      - **Multi-window configs** (item 2): `StrategyConfig.window` (str) is
+        now `windows` (tuple) — `generate_signals` runs each window
+        independently within a session; daily PnL is just the sum across
+        whatever each window produced.
+      - **15-minute liquidity + sweep-universe presets** (item 3):
+        `features/liquidity.py`'s `swing_levels` takes a `timeframe`
+        (1m or 15m, resampled and remapped through the resampled bars' own
+        `knowable_at`); `configs/sweep_universe.py` adds the 4 named
+        presets (`session_refs`, `session_refs_plus_swings`, `bsl_ssl_15m`,
+        `swings_only`), resolved per-window since pre-window level types
+        are window-specific. Two correctness gaps found while wiring this
+        up and fixed before building on top of it: (a) the `next_liquidity`
+        target was drawing from *every* level type regardless of which
+        sweep universe was active — `_target_price` now takes the same
+        resolved `target_level_types` the sweep gate used, per the spec's
+        explicit "must be able to draw from the same preset the sweep
+        uses"; (b) `StrategyConfig.swing_15m_n` was defined but never
+        actually reached `all_liquidity_levels` — `FeatureStore`'s
+        `liquidity_levels`/`sweeps` silently used a hardcoded default
+        regardless of what a config specified. Both are now covered by
+        dedicated tests (a level type outside the active universe is
+        proven excluded from targeting; two different `swing_15m_n` values
+        are proven to produce different cached results, not a silent
+        collision).
+      - **Named configs in `configs/grid.json`** (item 4): `as_taught_5m`
+        (the book version), `as_taught_1m` (identical, 1m FVG/entry
+        timeframe), and `as_traded` — replacing Phase 3's single
+        `CONSENSUS_CONFIG` as the reference set going forward.
+        `CONSENSUS_CONFIG` itself is untouched (Phase 3's own verification
+        and tests still pin its exact values); `run_verification.py`'s
+        default now points at `as_taught_5m`. Two source gaps the spec
+        flagged with ⚠️ (`as_taught_1m`'s and `as_traded`'s exact
+        parameters weren't fully captured from the original material) are
+        resolved the way the spec itself instructs: `as_taught_1m` = the
+        same `as_taught_5m` logic with FVG/entry timeframe changed to 1m;
+        `as_traded` = `as_taught_5m` with MSS required as the one
+        difference, defaulted and labeled everywhere as **"as_traded
+        (default placeholder, not yet user-specified)"**
+        (`configs/grid.py`'s `placeholder_note`) until replaced with real
+        discretionary parameters. `engine/pipeline.py` factors the
+        "resolve sweep universe → compute levels/sweeps → run signals/
+        trades" sequence that `run_verification.py`, the frequency
+        diagnostic, and the cache-vs-scratch test all need into one place,
+        after a stub/key mismatch caused by the `swing_15m_n` fix showed
+        three near-duplicate copies of this logic drifting out of sync.
+      - **Frequency diagnostic** (item 5, `engine/frequency_diagnostic.py`):
+        computes, for all three named configs — pct of windows with ≥1
+        qualified setup by window/year, pct of trading days with ≥1 trade
+        by year (the CHECKPOINT's "number that matters"), trades/year,
+        `as_traded`'s trades-per-day distribution, and gate/no-trade reason
+        mix by year/window (item c). Every function reads only
+        session/window/timestamp columns — `compute_frequency_diagnostic`
+        drops `gross_pnl`/`net_pnl`/`r_multiple`/`mae_points`/`mfe_points`
+        from the trade log immediately after running the pipeline, before
+        any metric function sees it, so "blind to PnL" is structural, not
+        just a matter of what gets printed. Items (a) and (b) were left to
+        us to design ("any additional blind, PnL-free coverage/consistency
+        checks you think are useful here") — we implemented the spec's own
+        two parenthetical suggestions directly: (a) `raw_setup_counts`,
+        the total *count* of uncapped signals by window/year (not just
+        window/day presence), read next to the coverage percentage to tell
+        apart "this window rarely qualifies" from "it qualifies often but
+        the cap/sequencing discards most of it"; (b) `atr_mult_sensitivity`,
+        rerunning the day-coverage number at a couple of alternative
+        `fvg_min_size_atr_mult` values against the named configs' current
+        0.0 (no minimum).
+
+  **Phase 4's CHECKPOINT is not yet met.** Item (c) is explicit: "FULL-SPAN
+  FREQUENCY DIAGNOSTIC... entire non-holdout span" of real NQ data, and the
+  CHECKPOINT itself asks whether real day-coverage looks like the teaching
+  material. `ict_lab/data/raw/` still has no purchased data (see "Getting
+  the Phase 1 data" above) — the same block that stopped Phase 3's
+  verification script from running for real. The diagnostic code above is
+  complete and tested against synthetic fixtures, and `run_and_print`
+  prints a loud disclaimer whenever it isn't handed real data, but a
+  synthetic random walk has no genuine session structure or liquidity
+  behavior to measure — running it now would produce syntactically valid
+  numbers that are not evidence about the real question. Phase 5 is
+  similarly gated on real data for anything beyond code-completeness, so
+  this project is holding at the Phase 4 CHECKPOINT until the purchase
+  happens.
 - [ ] Phase 5 — parameter sweep, nulls, statistics
 - [ ] Phase 6 — results dashboard
 - [ ] Phase 7 — reporting pass

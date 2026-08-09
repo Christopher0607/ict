@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 
+from ict_lab.configs.sweep_universe import PRESETS
+
 
 @dataclass(frozen=True)
 class CostModel:
@@ -19,15 +21,14 @@ COST_MODELS: dict[str, CostModel] = {
 
 @dataclass(frozen=True)
 class StrategyConfig:
-    """Every Phase 3 knob for the signal pipeline and execution layer. One
-    window only, one trade per session per window -- Phase 4 is what
-    introduces multi-window configs and multiple trades per window; adding
-    those fields here now would be building ahead of the phase that defines
-    them.
+    """Every strategy knob for the signal pipeline and execution layer.
+    windows: one or more killzone/rth window names, each run independently
+    within a session (Phase 4 item 2) -- daily PnL is just the sum across
+    whatever each window produced.
     """
 
     name: str
-    window: str
+    windows: tuple[str, ...]
 
     bias_method: str = "none"  # none | prior_day | swing_structure | daily_ma_slope | perfect
     bias_timeframe: str = "15m"  # swing_structure only
@@ -35,7 +36,8 @@ class StrategyConfig:
     bias_ma_period: int = 20  # daily_ma_slope only
 
     sweep_required: bool = True
-    sweep_level_types: tuple[str, ...] = ()
+    sweep_universe: str | None = None  # a name from sweep_universe.PRESETS
+    sweep_level_types: tuple[str, ...] = ()  # explicit level types, alternative to sweep_universe
     sweep_k: int = 3
     sweep_min_penetration_ticks: float = 1.0
 
@@ -49,7 +51,8 @@ class StrategyConfig:
     fvg_min_size_points: float = 0.0
     fvg_min_size_atr_mult: float = 0.0
 
-    swing_n: int = 5  # liquidity levels + MSS reference swings
+    swing_n: int = 5  # 1m liquidity levels + MSS reference swings
+    swing_15m_n: int = 5  # 15m liquidity levels (bsl_ssl_15m sweep universe)
 
     entry_level: str = "50%"  # proximal | 50% | distal
     stop_type: str = "swing"  # swing | gap_distal | fixed_points
@@ -63,9 +66,11 @@ class StrategyConfig:
 
     hard_exit: str = "window_end"  # window_end | rth_end
 
-    max_trades_per_window: int = 1
+    max_trades_per_window: int = 1  # 1, or up to the hard safety cap of 10
 
     def __post_init__(self) -> None:
+        if not self.windows:
+            raise ValueError("windows must be a non-empty tuple of window names")
         if self.entry_level not in ("proximal", "50%", "distal"):
             raise ValueError(f"entry_level must be proximal/50%/distal, got {self.entry_level!r}")
         if self.stop_type not in ("swing", "gap_distal", "fixed_points"):
@@ -84,10 +89,15 @@ class StrategyConfig:
             raise ValueError(f"unknown bias_method {self.bias_method!r}")
         if self.mss_break_style not in ("close", "wick"):
             raise ValueError(f"mss_break_style must be close/wick, got {self.mss_break_style!r}")
-        if self.sweep_required and not self.sweep_level_types:
-            raise ValueError("sweep_required=True needs a non-empty sweep_level_types")
-        if self.max_trades_per_window != 1:
-            raise ValueError("Phase 3 scope is exactly 1 trade per session per window")
+        if self.sweep_required:
+            if bool(self.sweep_universe) == bool(self.sweep_level_types):
+                raise ValueError(
+                    "sweep_required=True needs exactly one of sweep_universe or sweep_level_types set"
+                )
+            if self.sweep_universe is not None and self.sweep_universe not in PRESETS:
+                raise ValueError(f"unknown sweep_universe {self.sweep_universe!r}. Choose from {PRESETS}.")
+        if not 1 <= self.max_trades_per_window <= 10:
+            raise ValueError("max_trades_per_window must be between 1 and the hard safety cap of 10")
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -98,10 +108,11 @@ class StrategyConfig:
 # size, sweep required on prior-session or pre-window H/L with K=3 and 1
 # tick penetration, displacement 1.5x ATR(14), MSS not required, entry at
 # 50% of the gap, stop beyond the displacement swing, target 2R, NY AM
-# window, no bias." grid.json doesn't exist yet, so this is that baseline.
+# window, no bias." Predates Phase 4's sweep-universe presets, so it still
+# pins explicit sweep_level_types rather than using sweep_universe.
 CONSENSUS_CONFIG = StrategyConfig(
     name="consensus",
-    window="killzone_ny_am",
+    windows=("killzone_ny_am",),
     bias_method="none",
     sweep_required=True,
     sweep_level_types=(

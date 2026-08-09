@@ -102,7 +102,32 @@ def test_swing_levels_reuses_swing_points(synthetic_bars):
     df = synthetic_bars("2024-06-03 09:00:00", "2024-06-03 11:00:00")
     levels = swing_levels(df, n=5)
     assert set(levels["level_type"].unique()) <= {"swing_high", "swing_low"}
-    assert levels["knowable_at"].notna().all()
+
+
+def test_swing_levels_15m_uses_suffixed_types_and_knowable_at_from_resampled_bars(synthetic_bars):
+    df = synthetic_bars("2024-06-03 09:00:00", "2024-06-05 09:00:00")
+    levels = swing_levels(df, n=5, timeframe="15m")
+    assert not levels.empty
+    assert set(levels["level_type"].unique()) <= {"swing_high_15m", "swing_low_15m"}
+    # knowable_at must land on an actual 1m bar timestamp (the remap target),
+    # not a raw 15m label that might not even exist in the source data.
+    assert levels["knowable_at"].isin(df.index).all()
+
+
+def test_swing_levels_15m_and_1m_are_independent_level_types(synthetic_bars):
+    df = synthetic_bars("2024-06-03 09:00:00", "2024-06-05 09:00:00")
+    one_m = swing_levels(df, n=5, timeframe="1m")
+    fifteen_m = swing_levels(df, n=5, timeframe="15m")
+    assert set(one_m["level_type"].unique()).isdisjoint(set(fifteen_m["level_type"].unique()))
+    assert len(one_m) != len(fifteen_m)  # different timeframe -> different swing counts
+
+
+def test_all_liquidity_levels_includes_both_swing_timeframes(synthetic_bars):
+    df = synthetic_bars("2024-06-03 09:00:00", "2024-06-06 09:00:00")
+    combined = all_liquidity_levels(df)
+    types = set(combined["level_type"].unique())
+    assert {"swing_high", "swing_low", "swing_high_15m", "swing_low_15m"} <= types
+    assert combined["knowable_at"].notna().all()
 
 
 def test_all_liquidity_levels_sorted_by_knowable_at(synthetic_bars):

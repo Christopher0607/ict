@@ -1,0 +1,64 @@
+{
+  "named_configs": {
+    "as_taught_5m": {
+      "windows": ["killzone_london", "killzone_ny_am", "killzone_ny_pm"],
+      "bias_method": "swing_structure",
+      "bias_timeframe": "15m",
+      "sweep_required": true,
+      "sweep_universe": "bsl_ssl_15m",
+      "sweep_k": 3,
+      "sweep_min_penetration_ticks": 1.0,
+      "mss_required": false,
+      "displacement_required": true,
+      "displacement_atr_mult": 1.5,
+      "fvg_timeframe": "5m",
+      "fvg_min_size_points": 0.0,
+      "entry_level": "50%",
+      "stop_type": "swing",
+      "target_type": "next_liquidity",
+      "target_fallback_r_multiple": 2.0,
+      "max_trades_per_window": 1
+    },
+    "as_taught_1m": {
+      "windows": ["killzone_london", "killzone_ny_am", "killzone_ny_pm"],
+      "bias_method": "swing_structure",
+      "bias_timeframe": "15m",
+      "sweep_required": true,
+      "sweep_universe": "bsl_ssl_15m",
+      "sweep_k": 3,
+      "sweep_min_penetration_ticks": 1.0,
+      "mss_required": false,
+      "displacement_required": true,
+      "displacement_atr_mult": 1.5,
+      "fvg_timeframe": "1m",
+      "fvg_min_size_points": 0.0,
+      "entry_level": "50%",
+      "stop_type": "swing",
+      "target_type": "next_liquidity",
+      "target_fallback_r_multiple": 2.0,
+      "max_trades_per_window": 1
+    },
+    "as_traded": {
+      "windows": ["killzone_london", "killzone_ny_am", "killzone_ny_pm"],
+      "bias_method": "swing_structure",
+      "bias_timeframe": "15m",
+      "sweep_required": true,
+      "sweep_universe": "bsl_ssl_15m",
+      "sweep_k": 3,
+      "sweep_min_penetration_ticks": 1.0,
+      "mss_required": true,
+      "displacement_required": true,
+      "displacement_atr_mult": 1.5,
+      "fvg_timeframe": "5m",
+      "fvg_min_size_points": 0.0,
+      "entry_level": "50%",
+      "stop_type": "swing",
+      "target_type": "next_liquidity",
+      "target_fallback_r_multiple": 2.0,
+      "max_trades_per_window": 1
+    }
+  },
+  "placeholders": {
+    "as_traded": "as_traded (default placeholder, not yet user-specified)"
+  }
+}

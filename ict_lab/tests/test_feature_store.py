@@ -56,6 +56,27 @@ def test_sweeps_level_types_order_does_not_create_separate_cache_entries(synthet
     assert a is b
 
 
+def test_liquidity_levels_swing_15m_n_is_not_conflated(synthetic_bars):
+    df = synthetic_bars("2024-06-03 09:00:00", "2024-06-10 09:00:00")
+    store = FeatureStore(df)
+
+    a = store.liquidity_levels(5, swing_15m_n=3)
+    b = store.liquidity_levels(5, swing_15m_n=7)
+    assert a is not b
+    a_15m = set(a[a["level_type"].isin(["swing_high_15m", "swing_low_15m"])]["price"])
+    b_15m = set(b[b["level_type"].isin(["swing_high_15m", "swing_low_15m"])]["price"])
+    assert a_15m != b_15m  # different swing_15m_n must actually reach all_liquidity_levels, not be ignored
+
+
+def test_sweeps_swing_15m_n_is_not_conflated(synthetic_bars):
+    df = synthetic_bars("2024-06-03 09:00:00", "2024-06-10 09:00:00")
+    store = FeatureStore(df)
+
+    a = store.sweeps(5, ("swing_high_15m", "swing_low_15m"), 3, 1.0, 0.25, swing_15m_n=3)
+    b = store.sweeps(5, ("swing_high_15m", "swing_low_15m"), 3, 1.0, 0.25, swing_15m_n=7)
+    assert a is not b
+
+
 def test_bias_updates_none_and_prior_day(synthetic_bars):
     df = synthetic_bars("2024-06-03 09:00:00", "2024-06-06 09:00:00")
     store = FeatureStore(df)

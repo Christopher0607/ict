@@ -48,9 +48,10 @@ class FeatureStore:
     def swings(self, n: int) -> pd.DataFrame:
         return self._get(("swings", n), lambda: swing_points(self.df_1m, n))
 
-    def liquidity_levels(self, swing_n: int) -> pd.DataFrame:
+    def liquidity_levels(self, swing_n: int, swing_15m_n: int = 5) -> pd.DataFrame:
         return self._get(
-            ("liquidity_levels", swing_n), lambda: all_liquidity_levels(self.df_1m, swing_n=swing_n)
+            ("liquidity_levels", swing_n, swing_15m_n),
+            lambda: all_liquidity_levels(self.df_1m, swing_n=swing_n, swing_15m_n=swing_15m_n),
         )
 
     def sweeps(
@@ -60,12 +61,13 @@ class FeatureStore:
         k: int,
         min_penetration_ticks: float,
         tick_size: float,
+        swing_15m_n: int = 5,
     ) -> pd.DataFrame:
         level_types = tuple(sorted(level_types))
-        key = ("sweeps", swing_n, level_types, k, min_penetration_ticks, tick_size)
+        key = ("sweeps", swing_n, swing_15m_n, level_types, k, min_penetration_ticks, tick_size)
 
         def compute():
-            levels = self.liquidity_levels(swing_n)
+            levels = self.liquidity_levels(swing_n, swing_15m_n)
             return detect_sweeps(
                 self.df_1m, levels, list(level_types), k, min_penetration_ticks, tick_size
             )

@@ -2,12 +2,23 @@
 trade / no-trade logs. Only ever scans a single session's own bars per
 trade (grouped once up front), never the full multi-year series, matching
 the "fills iterate over killzone bars only" performance requirement.
+
+Phase 4 item 2 (multiple trades per window): signals.py emits every
+direction-matching FVG uncapped: this module is what actually decides how
+many become trades. Within each (session_date, window) group, signals are
+walked in setup_at order tracking a "position open until" timestamp -- a
+signal is skipped (as a no_trade row, so every signal's fate is still
+accounted for) if it lands at or before the still-open position's exit, or
+if config.max_trades_per_window has already been reached. A signal whose
+limit order never fills does NOT block later signals in the group: the
+open-until clock only advances on an actual fill.
 """
 from __future__ import annotations
 
 import pandas as pd
 
 from ict_lab.configs.strategy_config import COST_MODELS, StrategyConfig
+from ict_lab.configs.sweep_universe import resolve_sweep_universe
 from ict_lab.data.sessions import add_session_columns
 
 TRADE_COLUMNS = [
@@ -95,9 +106,15 @@ def _target_price(
     levels: pd.DataFrame,
     sweeps: pd.DataFrame,
     entry_at: pd.Timestamp,
+    target_level_types: tuple[str, ...] | None = None,
 ) -> tuple[float | None, int | None]:
     """Returns (target_price, target_time_bars). Exactly one is non-None:
-    a price target, or a bar-count for a time-based exit."""
+    a price target, or a bar-count for a time-based exit.
+
+    target_level_types (Phase 4 item 3: "next opposing liquidity must draw
+    from the same preset the sweep uses") narrows next_liquidity candidates
+    to that specific set of level_type values; None means no narrowing (the
+    caller has no sweep universe to align with, e.g. sweep_required=False)."""
     stop_distance = abs(entry_price - stop_price)
 
     if config.target_type == "fixed_r":
@@ -111,6 +128,8 @@ def _target_price(
     # next_liquidity: nearest still-active opposing-type level beyond entry.
     opposing_suffix = "_high" if direction == "bullish" else "_low"
     candidates = levels[levels["level_type"].str.endswith(opposing_suffix) & (levels["knowable_at"] <= entry_at)]
+    if target_level_types is not None:
+        candidates = candidates[candidates["level_type"].isin(target_level_types)]
     if not sweeps.empty:
         already_swept = sweeps.loc[sweeps["confirmed_at"] <= entry_at, ["level_type", "level_price"]]
         if not already_swept.empty:
@@ -236,9 +255,14 @@ def simulate_trades(
         for _, r in no_signals.iterrows()
     ]
 
-    for _, sig in signals.iterrows():
-        session_bars = session_groups[sig["session_date"]]
-        window_bars = session_bars[session_bars[sig["window"]]]
+    if signals.empty:
+        groups = []
+    else:
+        groups = signals.groupby(["session_date", "window"], sort=False)
+
+    for (session_date, window), group in groups:
+        session_bars = session_groups[session_date]
+        window_bars = session_bars[session_bars[window]]
         window_end = window_bars.index.max()
 
         if config.hard_exit == "window_end":
@@ -247,78 +271,103 @@ def simulate_trades(
             rth_bars = session_bars[session_bars["rth"]]
             hard_exit_at = rth_bars.index.max() if not rth_bars.empty else window_end
 
-        direction = sig["direction"]
-        entry_price = _entry_price(direction, config.entry_level, sig["fvg_top"], sig["fvg_bottom"], tick_size)
-        entry_at = _simulate_entry(direction, entry_price, sig["setup_at"], window_end, session_bars)
-        if entry_at is None:
-            no_trades.append(
-                {"session_date": sig["session_date"], "window": sig["window"], "reason": "limit_unfilled"}
+        target_level_types = (
+            config.sweep_level_types or resolve_sweep_universe(config.sweep_universe, window)
+            if (config.sweep_level_types or config.sweep_universe)
+            else None
+        )
+
+        ordered = group.sort_values("setup_at", kind="mergesort")
+        position_open_until = None
+        trades_taken = 0
+
+        for _, sig in ordered.iterrows():
+            if trades_taken >= config.max_trades_per_window:
+                no_trades.append(
+                    {"session_date": session_date, "window": window, "reason": "max_trades_reached"}
+                )
+                continue
+            if position_open_until is not None and sig["setup_at"] <= position_open_until:
+                no_trades.append(
+                    {"session_date": session_date, "window": window, "reason": "position_open"}
+                )
+                continue
+
+            direction = sig["direction"]
+            entry_price = _entry_price(direction, config.entry_level, sig["fvg_top"], sig["fvg_bottom"], tick_size)
+            entry_at = _simulate_entry(direction, entry_price, sig["setup_at"], window_end, session_bars)
+            if entry_at is None:
+                no_trades.append(
+                    {"session_date": session_date, "window": window, "reason": "limit_unfilled"}
+                )
+                continue
+
+            stop_price = _stop_price(
+                direction, entry_price, config, tick_size, sig["fvg_top"], sig["fvg_bottom"], sig["sweep_level_price"]
             )
-            continue
+            target_price, target_time_bars = _target_price(
+                direction, entry_price, stop_price, config, tick_size, levels, sweeps, entry_at,
+                target_level_types,
+            )
+            exit_result = _simulate_exit(
+                direction,
+                entry_at,
+                entry_price,
+                stop_price,
+                target_price,
+                target_time_bars,
+                hard_exit_at,
+                session_bars,
+                tick_size,
+                cost_model.stop_slippage_ticks,
+            )
+            mae_points, mfe_points = _mae_mfe(
+                direction, entry_price, entry_at, exit_result["exit_at"], session_bars
+            )
 
-        stop_price = _stop_price(
-            direction, entry_price, config, tick_size, sig["fvg_top"], sig["fvg_bottom"], sig["sweep_level_price"]
-        )
-        target_price, target_time_bars = _target_price(
-            direction, entry_price, stop_price, config, tick_size, levels, sweeps, entry_at
-        )
-        exit_result = _simulate_exit(
-            direction,
-            entry_at,
-            entry_price,
-            stop_price,
-            target_price,
-            target_time_bars,
-            hard_exit_at,
-            session_bars,
-            tick_size,
-            cost_model.stop_slippage_ticks,
-        )
-        mae_points, mfe_points = _mae_mfe(
-            direction, entry_price, entry_at, exit_result["exit_at"], session_bars
-        )
+            price_diff = (
+                exit_result["exit_price"] - entry_price
+                if direction == "bullish"
+                else entry_price - exit_result["exit_price"]
+            )
+            ticks = price_diff / tick_size
+            gross_pnl = ticks * tick_value
+            net_pnl = gross_pnl - cost_model.commission_round_turn
+            stop_distance = abs(entry_price - stop_price)
+            r_multiple = price_diff / stop_distance if stop_distance > 0 else float("nan")
 
-        price_diff = (
-            exit_result["exit_price"] - entry_price
-            if direction == "bullish"
-            else entry_price - exit_result["exit_price"]
-        )
-        ticks = price_diff / tick_size
-        gross_pnl = ticks * tick_value
-        net_pnl = gross_pnl - cost_model.commission_round_turn
-        stop_distance = abs(entry_price - stop_price)
-        r_multiple = price_diff / stop_distance if stop_distance > 0 else float("nan")
+            entry_pos = session_bars.index.get_indexer([entry_at])[0]
+            exit_pos = session_bars.index.get_indexer([exit_result["exit_at"]])[0]
+            bars_held = exit_pos - entry_pos + 1
+            is_roll_day = bool(session_bars.loc[entry_at, "is_roll_day"]) if "is_roll_day" in session_bars.columns else False
 
-        entry_pos = session_bars.index.get_indexer([entry_at])[0]
-        exit_pos = session_bars.index.get_indexer([exit_result["exit_at"]])[0]
-        bars_held = exit_pos - entry_pos + 1
-        is_roll_day = bool(session_bars.loc[entry_at, "is_roll_day"]) if "is_roll_day" in session_bars.columns else False
-
-        trades.append(
-            {
-                "session_date": sig["session_date"],
-                "symbol": symbol,
-                "window": sig["window"],
-                "direction": direction,
-                "setup_at": sig["setup_at"],
-                "entry_at": entry_at,
-                "entry_price": entry_price,
-                "stop_price": stop_price,
-                "target_price": target_price,
-                "exit_at": exit_result["exit_at"],
-                "exit_price": exit_result["exit_price"],
-                "exit_reason": exit_result["exit_reason"],
-                "bars_held": bars_held,
-                "gross_pnl": gross_pnl,
-                "net_pnl": net_pnl,
-                "r_multiple": r_multiple,
-                "mae_points": mae_points,
-                "mfe_points": mfe_points,
-                "ambiguous_bar": exit_result["ambiguous_bar"],
-                "is_roll_day": is_roll_day,
-                "config": config.to_dict(),
-            }
-        )
+            trades.append(
+                {
+                    "session_date": session_date,
+                    "symbol": symbol,
+                    "window": window,
+                    "direction": direction,
+                    "setup_at": sig["setup_at"],
+                    "entry_at": entry_at,
+                    "entry_price": entry_price,
+                    "stop_price": stop_price,
+                    "target_price": target_price,
+                    "exit_at": exit_result["exit_at"],
+                    "exit_price": exit_result["exit_price"],
+                    "exit_reason": exit_result["exit_reason"],
+                    "bars_held": bars_held,
+                    "gross_pnl": gross_pnl,
+                    "net_pnl": net_pnl,
+                    "r_multiple": r_multiple,
+                    "mae_points": mae_points,
+                    "mfe_points": mfe_points,
+                    "ambiguous_bar": exit_result["ambiguous_bar"],
+                    "is_roll_day": is_roll_day,
+                    "config": config.to_dict(),
+                }
+            )
+            position_open_until = exit_result["exit_at"]
+            trades_taken += 1
 
     trades_df = pd.DataFrame(trades, columns=TRADE_COLUMNS) if trades else pd.DataFrame(columns=TRADE_COLUMNS)
     no_trades_df = (

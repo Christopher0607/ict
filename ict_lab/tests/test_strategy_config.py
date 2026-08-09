@@ -8,7 +8,7 @@ from ict_lab.configs.strategy_config import COST_MODELS, CONSENSUS_CONFIG, Strat
 def _base_kwargs(**overrides):
     kwargs = dict(
         name="t",
-        window="killzone_ny_am",
+        windows=("killzone_ny_am",),
         sweep_required=True,
         sweep_level_types=("prior_session_high",),
     )
@@ -18,7 +18,7 @@ def _base_kwargs(**overrides):
 
 def test_consensus_config_matches_spec_verification_baseline():
     c = CONSENSUS_CONFIG
-    assert c.window == "killzone_ny_am"
+    assert c.windows == ("killzone_ny_am",)
     assert c.bias_method == "none"
     assert c.sweep_required is True
     assert c.sweep_k == 3
@@ -55,7 +55,9 @@ def test_cost_models_match_spec_defaults():
         {"hard_exit": "bogus"},
         {"bias_method": "bogus"},
         {"mss_break_style": "bogus"},
-        {"max_trades_per_window": 2},
+        {"max_trades_per_window": 0},
+        {"max_trades_per_window": 11},
+        {"windows": ()},
     ],
 )
 def test_rejects_invalid_values(overrides):
@@ -63,23 +65,50 @@ def test_rejects_invalid_values(overrides):
         StrategyConfig(**_base_kwargs(**overrides))
 
 
+def test_max_trades_per_window_allows_the_full_1_to_10_range():
+    for n in (1, 2, 10):
+        StrategyConfig(**_base_kwargs(max_trades_per_window=n))
+
+
 def test_swing_stop_requires_sweep_required():
     with pytest.raises(ValueError, match="sweep_required"):
         StrategyConfig(
-            name="t", window="killzone_ny_am", stop_type="swing", sweep_required=False
+            name="t", windows=("killzone_ny_am",), stop_type="swing", sweep_required=False
         )
 
 
 def test_sweep_required_needs_level_types():
     with pytest.raises(ValueError, match="sweep_level_types"):
         StrategyConfig(
-            name="t", window="killzone_ny_am", sweep_required=True, sweep_level_types=()
+            name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=()
+        )
+
+
+def test_sweep_required_rejects_both_universe_and_level_types_set():
+    with pytest.raises(ValueError, match="exactly one"):
+        StrategyConfig(
+            name="t", windows=("killzone_ny_am",), sweep_required=True,
+            sweep_universe="session_refs", sweep_level_types=("prior_session_high",),
+        )
+
+
+def test_sweep_universe_alone_is_valid():
+    config = StrategyConfig(
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_universe="session_refs",
+    )
+    assert config.sweep_level_types == ()
+
+
+def test_unknown_sweep_universe_rejected():
+    with pytest.raises(ValueError, match="unknown sweep_universe"):
+        StrategyConfig(
+            name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_universe="bogus",
         )
 
 
 def test_to_dict_round_trips_key_fields():
     d = CONSENSUS_CONFIG.to_dict()
     assert d["name"] == "consensus"
-    assert d["window"] == "killzone_ny_am"
+    assert d["windows"] == ("killzone_ny_am",)
     assert d["target_r_multiple"] == 2.0
     assert isinstance(d["sweep_level_types"], tuple)

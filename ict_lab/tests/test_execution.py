@@ -103,7 +103,7 @@ def test_entry_scan_starts_strictly_after_setup_bar():
 
 def test_stop_swing_uses_swept_level_with_buffer():
     config = StrategyConfig(
-        name="t", window="killzone_ny_am", sweep_required=True, sweep_level_types=("prior_session_low",),
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
         stop_buffer_ticks=2,
     )
     stop = _stop_price(
@@ -115,20 +115,20 @@ def test_stop_swing_uses_swept_level_with_buffer():
 
 def test_stop_swing_without_swept_level_raises():
     config = StrategyConfig(
-        name="t", window="killzone_ny_am", sweep_required=True, sweep_level_types=("prior_session_low",)
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",)
     )
     with pytest.raises(ValueError, match="swept level"):
         _stop_price("bullish", 101.0, config, 0.25, 102, 100, swept_level_price=None)
 
 
 def test_stop_gap_distal_bearish():
-    config = StrategyConfig(name="t", window="killzone_ny_am", stop_type="gap_distal", sweep_required=False, stop_buffer_ticks=1)
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False, stop_buffer_ticks=1)
     stop = _stop_price("bearish", entry_price=101.0, config=config, tick_size=0.25, fvg_top=102, fvg_bottom=100, swept_level_price=None)
     assert stop == 102 + 1 * 0.25
 
 
 def test_stop_fixed_points_bullish():
-    config = StrategyConfig(name="t", window="killzone_ny_am", stop_type="fixed_points", stop_fixed_points=5, sweep_required=False)
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="fixed_points", stop_fixed_points=5, sweep_required=False)
     stop = _stop_price("bullish", entry_price=100.0, config=config, tick_size=0.25, fvg_top=102, fvg_bottom=100, swept_level_price=None)
     assert stop == 95.0
 
@@ -137,7 +137,7 @@ def test_stop_fixed_points_bullish():
 
 
 def test_target_fixed_r_bullish_and_bearish():
-    config = StrategyConfig(name="t", window="killzone_ny_am", stop_type="gap_distal", sweep_required=False, target_type="fixed_r", target_r_multiple=2)
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False, target_type="fixed_r", target_r_multiple=2)
     price, time_bars = _target_price("bullish", entry_price=100.0, stop_price=98.0, config=config, tick_size=0.25, levels=pd.DataFrame(), sweeps=pd.DataFrame(), entry_at=pd.Timestamp("2024-06-03", tz="UTC"))
     assert price == 104.0 and time_bars is None
 
@@ -146,7 +146,7 @@ def test_target_fixed_r_bullish_and_bearish():
 
 
 def test_target_time_returns_bars_not_price():
-    config = StrategyConfig(name="t", window="killzone_ny_am", stop_type="gap_distal", sweep_required=False, target_type="time", target_time_bars=5)
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False, target_type="time", target_time_bars=5)
     price, time_bars = _target_price("bullish", 100.0, 98.0, config, 0.25, pd.DataFrame(), pd.DataFrame(), pd.Timestamp("2024-06-03", tz="UTC"))
     assert price is None and time_bars == 5
 
@@ -160,7 +160,7 @@ def test_target_next_liquidity_picks_nearest_unswept_opposing_level():
             {"level_type": "swing_low", "session_date": pd.Timestamp("2024-06-03"), "price": 90.0, "knowable_at": entry_at - pd.Timedelta(minutes=5)},
         ]
     )
-    config = StrategyConfig(name="t", window="killzone_ny_am", stop_type="gap_distal", sweep_required=False, target_type="next_liquidity")
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False, target_type="next_liquidity")
     price, time_bars = _target_price("bullish", 100.0, 98.0, config, 0.25, levels, pd.DataFrame(), entry_at)
     assert price == 103.0 and time_bars is None  # nearest high-type level above entry, not the farther 105
 
@@ -176,15 +176,44 @@ def test_target_next_liquidity_skips_already_swept_level():
     sweeps = pd.DataFrame(
         [{"level_type": "prior_session_high", "level_price": 103.0, "confirmed_at": entry_at - pd.Timedelta(minutes=1)}]
     )
-    config = StrategyConfig(name="t", window="killzone_ny_am", stop_type="gap_distal", sweep_required=False, target_type="next_liquidity")
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False, target_type="next_liquidity")
     price, _ = _target_price("bullish", 100.0, 98.0, config, 0.25, levels, sweeps, entry_at)
     assert price == 105.0
+
+
+def test_target_next_liquidity_respects_target_level_types_narrowing():
+    # Phase 4 item 3: "next opposing liquidity must draw from the same
+    # preset the sweep uses" -- target_level_types narrows the candidate
+    # pool even though the raw levels frame has other opposing-type levels.
+    entry_at = pd.Timestamp("2024-06-03 14:10:00", tz="UTC")
+    levels = pd.DataFrame(
+        [
+            {"level_type": "prior_session_high", "session_date": pd.Timestamp("2024-06-03"), "price": 103.0, "knowable_at": entry_at - pd.Timedelta(minutes=5)},
+            {"level_type": "swing_high", "session_date": pd.Timestamp("2024-06-03"), "price": 105.0, "knowable_at": entry_at - pd.Timedelta(minutes=5)},
+        ]
+    )
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False, target_type="next_liquidity")
+
+    price, _ = _target_price("bullish", 100.0, 98.0, config, 0.25, levels, pd.DataFrame(), entry_at)
+    assert price == 103.0  # no narrowing -> nearest of either type wins
+
+    price2, _ = _target_price(
+        "bullish", 100.0, 98.0, config, 0.25, levels, pd.DataFrame(), entry_at,
+        target_level_types=("swing_high", "swing_low"),
+    )
+    assert price2 == 105.0  # prior_session_high excluded -> falls through to swing_high
+
+    price3, _ = _target_price(
+        "bullish", 100.0, 98.0, config, 0.25, levels, pd.DataFrame(), entry_at,
+        target_level_types=("swing_low",),
+    )
+    assert price3 == 100.0 + config.target_fallback_r_multiple * 2.0  # no member qualifies -> R fallback
 
 
 def test_target_next_liquidity_falls_back_to_r_multiple_when_none_qualify():
     entry_at = pd.Timestamp("2024-06-03 14:10:00", tz="UTC")
     config = StrategyConfig(
-        name="t", window="killzone_ny_am", stop_type="gap_distal", sweep_required=False,
+        name="t", windows=("killzone_ny_am",), stop_type="gap_distal", sweep_required=False,
         target_type="next_liquidity", target_fallback_r_multiple=3,
     )
     price, _ = _target_price("bullish", 100.0, 98.0, config, 0.25, pd.DataFrame(columns=["level_type", "price", "knowable_at"]), pd.DataFrame(), entry_at)
@@ -318,7 +347,7 @@ def test_simulate_trades_end_to_end_target_hit():
         }
     )
     config = StrategyConfig(
-        name="t", window="killzone_ny_am", sweep_required=True, sweep_level_types=("prior_session_low",),
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
         mss_required=False, displacement_required=False, entry_level="50%", stop_type="swing",
         stop_buffer_ticks=0, target_type="fixed_r", target_r_multiple=2,
     )
@@ -351,7 +380,7 @@ def test_simulate_trades_limit_unfilled_becomes_no_trade():
     # entry_level="distal" price (fvg_bottom=100.0) -- stays unfilled.
     df = _session_df({})
     config = StrategyConfig(
-        name="t", window="killzone_ny_am", sweep_required=True, sweep_level_types=("prior_session_low",),
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
         mss_required=False, displacement_required=False, entry_level="distal", stop_type="swing", stop_buffer_ticks=0,
     )
     signals = pd.DataFrame([signal])
@@ -362,11 +391,178 @@ def test_simulate_trades_limit_unfilled_becomes_no_trade():
     assert no_trades.iloc[0]["reason"] == "limit_unfilled"
 
 
+# ---------- Phase 4: multiple trades per window ----------
+
+
+def test_simulate_trades_multiple_nonoverlapping_signals_both_become_trades():
+    df = _session_df(
+        {
+            pd.Timestamp("2024-06-03 14:06:00", tz="UTC"): {"low": 100.4},  # signal A fills
+            pd.Timestamp("2024-06-03 14:08:00", tz="UTC"): {"high": 105.0},  # signal A hits target
+            pd.Timestamp("2024-06-03 14:16:00", tz="UTC"): {"low": 100.4},  # signal B fills
+            pd.Timestamp("2024-06-03 14:18:00", tz="UTC"): {"high": 105.0},  # signal B hits target
+        }
+    )
+    signals = pd.DataFrame(
+        [_signal_row(), _signal_row(setup_at=pd.Timestamp("2024-06-03 14:15:00", tz="UTC"))]
+    )
+    config = StrategyConfig(
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
+        mss_required=False, displacement_required=False, entry_level="50%", stop_type="swing",
+        stop_buffer_ticks=0, target_type="fixed_r", target_r_multiple=2, max_trades_per_window=2,
+    )
+    trades, no_trades = simulate_trades(
+        signals, pd.DataFrame(columns=NO_TRADE_COLUMNS), config, "NQ", df, pd.DataFrame(), pd.DataFrame()
+    )
+    assert no_trades.empty
+    assert list(trades["entry_at"]) == [
+        pd.Timestamp("2024-06-03 14:06:00", tz="UTC"), pd.Timestamp("2024-06-03 14:16:00", tz="UTC"),
+    ]
+    assert list(trades["exit_at"]) == [
+        pd.Timestamp("2024-06-03 14:08:00", tz="UTC"), pd.Timestamp("2024-06-03 14:18:00", tz="UTC"),
+    ]
+
+
+def test_simulate_trades_skips_signal_while_position_still_open():
+    df = _session_df(
+        {
+            pd.Timestamp("2024-06-03 14:06:00", tz="UTC"): {"low": 100.4},  # A fills
+            pd.Timestamp("2024-06-03 14:20:00", tz="UTC"): {"high": 105.0},  # A's target, well after B's setup
+        }
+    )
+    signal_a = _signal_row()  # setup_at 14:05
+    signal_b = _signal_row(setup_at=pd.Timestamp("2024-06-03 14:10:00", tz="UTC"))  # while A is still open
+    config = StrategyConfig(
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
+        mss_required=False, displacement_required=False, entry_level="50%", stop_type="swing",
+        stop_buffer_ticks=0, target_type="fixed_r", target_r_multiple=2, max_trades_per_window=5,
+    )
+    trades, no_trades = simulate_trades(
+        pd.DataFrame([signal_a, signal_b]), pd.DataFrame(columns=NO_TRADE_COLUMNS), config, "NQ", df,
+        pd.DataFrame(), pd.DataFrame(),
+    )
+    assert len(trades) == 1
+    assert trades.iloc[0]["setup_at"] == signal_a["setup_at"]
+    assert no_trades.iloc[0]["reason"] == "position_open"
+
+
+def test_simulate_trades_signal_at_exact_exit_bar_is_still_skipped():
+    # setup_at <= position_open_until is a strict-inclusive skip: a signal
+    # landing on the exact bar the prior trade exited does not get to fill.
+    exit_bar = pd.Timestamp("2024-06-03 14:10:00", tz="UTC")
+    df = _session_df(
+        {pd.Timestamp("2024-06-03 14:06:00", tz="UTC"): {"low": 100.4}, exit_bar: {"high": 105.0}}
+    )
+    signal_a = _signal_row()
+    signal_b = _signal_row(setup_at=exit_bar)
+    config = StrategyConfig(
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
+        mss_required=False, displacement_required=False, entry_level="50%", stop_type="swing",
+        stop_buffer_ticks=0, target_type="fixed_r", target_r_multiple=2, max_trades_per_window=5,
+    )
+    trades, no_trades = simulate_trades(
+        pd.DataFrame([signal_a, signal_b]), pd.DataFrame(columns=NO_TRADE_COLUMNS), config, "NQ", df,
+        pd.DataFrame(), pd.DataFrame(),
+    )
+    assert len(trades) == 1
+    assert trades.iloc[0]["exit_at"] == exit_bar
+    assert no_trades.iloc[0]["reason"] == "position_open"
+
+
+def test_simulate_trades_caps_at_max_trades_per_window():
+    df = _session_df(
+        {
+            pd.Timestamp("2024-06-03 14:06:00", tz="UTC"): {"low": 100.4},
+            pd.Timestamp("2024-06-03 14:08:00", tz="UTC"): {"high": 105.0},
+            pd.Timestamp("2024-06-03 14:16:00", tz="UTC"): {"low": 100.4},
+            pd.Timestamp("2024-06-03 14:18:00", tz="UTC"): {"high": 105.0},
+            pd.Timestamp("2024-06-03 14:26:00", tz="UTC"): {"low": 100.4},
+            pd.Timestamp("2024-06-03 14:28:00", tz="UTC"): {"high": 105.0},
+        }
+    )
+    signals = pd.DataFrame(
+        [
+            _signal_row(setup_at=pd.Timestamp("2024-06-03 14:05:00", tz="UTC")),
+            _signal_row(setup_at=pd.Timestamp("2024-06-03 14:15:00", tz="UTC")),
+            _signal_row(setup_at=pd.Timestamp("2024-06-03 14:25:00", tz="UTC")),
+        ]
+    )
+    config = StrategyConfig(
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
+        mss_required=False, displacement_required=False, entry_level="50%", stop_type="swing",
+        stop_buffer_ticks=0, target_type="fixed_r", target_r_multiple=2, max_trades_per_window=2,
+    )
+    trades, no_trades = simulate_trades(
+        signals, pd.DataFrame(columns=NO_TRADE_COLUMNS), config, "NQ", df, pd.DataFrame(), pd.DataFrame()
+    )
+    assert len(trades) == 2
+    assert no_trades.iloc[0]["reason"] == "max_trades_reached"
+
+
+def test_simulate_trades_unfilled_entry_does_not_block_next_signal():
+    # Signal A's FVG (49-50) is unreachable by any bar in the session, so its
+    # limit never fills; signal B (later setup_at, normal FVG) must still be
+    # evaluated fully rather than being treated as blocked by A.
+    df = _session_df(
+        {
+            pd.Timestamp("2024-06-03 14:16:00", tz="UTC"): {"low": 100.4},
+            pd.Timestamp("2024-06-03 14:18:00", tz="UTC"): {"high": 105.0},
+        }
+    )
+    signal_a = _signal_row(
+        setup_at=pd.Timestamp("2024-06-03 14:05:00", tz="UTC"), fvg_top=50.0, fvg_bottom=49.0, fvg_midpoint=49.5,
+    )
+    signal_b = _signal_row(setup_at=pd.Timestamp("2024-06-03 14:15:00", tz="UTC"))
+    config = StrategyConfig(
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_level_types=("prior_session_low",),
+        mss_required=False, displacement_required=False, entry_level="50%", stop_type="swing",
+        stop_buffer_ticks=0, target_type="fixed_r", target_r_multiple=2, max_trades_per_window=5,
+    )
+    trades, no_trades = simulate_trades(
+        pd.DataFrame([signal_a, signal_b]), pd.DataFrame(columns=NO_TRADE_COLUMNS), config, "NQ", df,
+        pd.DataFrame(), pd.DataFrame(),
+    )
+    assert len(trades) == 1
+    assert trades.iloc[0]["entry_at"] == pd.Timestamp("2024-06-03 14:16:00", tz="UTC")
+    assert set(no_trades["reason"]) == {"limit_unfilled"}
+
+
+def test_simulate_trades_next_liquidity_target_uses_resolved_sweep_universe():
+    # sweep_universe="swings_only" resolves to swing_high/swing_low only --
+    # the target must ignore the nearer prior_session_high even though it's
+    # present in the passed-in levels frame, matching what the sweep gate
+    # itself would have been scoped to.
+    df = _session_df({})
+    signal = _signal_row()
+    levels = pd.DataFrame(
+        [
+            {
+                "level_type": "prior_session_high", "session_date": pd.Timestamp("2024-06-03"),
+                "price": 101.5, "knowable_at": pd.Timestamp("2024-06-03 14:00:00", tz="UTC"),
+            },
+            {
+                "level_type": "swing_high", "session_date": pd.Timestamp("2024-06-03"),
+                "price": 110.0, "knowable_at": pd.Timestamp("2024-06-03 14:00:00", tz="UTC"),
+            },
+        ]
+    )
+    config = StrategyConfig(
+        name="t", windows=("killzone_ny_am",), sweep_required=True, sweep_universe="swings_only",
+        mss_required=False, displacement_required=False, entry_level="50%", stop_type="swing",
+        stop_buffer_ticks=0, target_type="next_liquidity",
+    )
+    trades, _ = simulate_trades(
+        pd.DataFrame([signal]), pd.DataFrame(columns=NO_TRADE_COLUMNS), config, "NQ", df, levels, pd.DataFrame()
+    )
+    assert len(trades) == 1
+    assert trades.iloc[0]["target_price"] == 110.0
+
+
 def test_simulate_trades_passes_through_no_signal_reasons():
     no_signals = pd.DataFrame(
         [{"session_date": pd.Timestamp("2024-06-03"), "window": "killzone_ny_am", "reason": "no_sweep"}]
     )
-    config = StrategyConfig(name="t", window="killzone_ny_am", sweep_required=False, stop_type="gap_distal")
+    config = StrategyConfig(name="t", windows=("killzone_ny_am",), sweep_required=False, stop_type="gap_distal")
     trades, no_trades = simulate_trades(
         pd.DataFrame(columns=["session_date", "window", "direction", "setup_at", "fvg_top", "fvg_bottom", "sweep_level_price"]),
         no_signals, config, "NQ", _session_df({}), pd.DataFrame(), pd.DataFrame(),
