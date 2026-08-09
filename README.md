@@ -60,7 +60,44 @@ Read it before touching this repo. The short version:
       (`generate_review_charts`) is wired up and tested structurally, but
       there's nothing a human would recognize in synthetic random-walk
       bars — running it for real still needs the Phase 1 data.
-- [ ] Phase 3 — execution engine
+- [~] Phase 3 — execution engine: code-complete, 163 tests passing (up
+      from 94). Phase 3's own text assumes two pieces of infrastructure
+      already exist ("engine/signals.py builds the canonical setup
+      sequence... from the FeatureStore") that neither Phase 1 nor Phase 2
+      actually asked for, so this phase built them too, scoped to what's
+      needed now rather than Phase 5's heavier version:
+      - `engine/feature_store.py` — Phase 2's detectors, memoized per
+        (detector, parameters) so a multi-config run doesn't redo shared
+        work. In-memory only; Phase 5's own persistent/sharded cache is a
+        separate, later concern.
+      - `engine/signals.py` — the canonical setup sequence: eligibility →
+        bias gate → sweep → MSS → optional displacement → first
+        direction-matching FVG, each stage narrowing the candidate
+        direction and advancing a reference point the next stage must
+        search strictly after. At most one setup per session+window
+        (Phase 3's scope; Phase 4 is what allows more).
+      - `engine/execution.py` — entry (proximal/50%/distal, tick-snapped
+        limit order, strict through-trade fill, cancel at window end),
+        exits (swing/gap-distal/fixed-points stop; fixed-R/next-opposing-
+        liquidity/time-based target; hard exit at window or RTH end),
+        same-bar stop-always-wins with `ambiguous_bar` flagged, stop
+        slippage, MAE/MFE, full trade log and no-trade log per the spec's
+        schema.
+      - `configs/strategy_config.py` — every knob as a validated,
+        immutable `StrategyConfig`, plus `CONSENSUS_CONFIG`: the exact
+        baseline Phase 3's VERIFICATION section names, since
+        `configs/grid.json` doesn't exist yet.
+      - The spec's own required check — "run every config on full data and
+        on data truncated at a cutoff bar, assert they agree" — extended
+        to signals *and now trade logs* in `tests/test_cache_vs_scratch.py`,
+        comparing one FeatureStore reused across 3 differently-parameterized
+        configs against a fresh store per config. Passed cleanly, meaning
+        the cache keys are complete (no cross-config contamination).
+      - `engine/run_verification.py` — runs the consensus config on one
+        month of a symbol and prints every trade with its surrounding
+        bars for hand-checking, per Phase 3's VERIFICATION item 1. Ready
+        to run for real; still blocked on the Phase 1 data the same way
+        everything else has been.
 - [ ] Phase 4 — taught configs, frequency, verification
 - [ ] Phase 5 — parameter sweep, nulls, statistics
 - [ ] Phase 6 — results dashboard
