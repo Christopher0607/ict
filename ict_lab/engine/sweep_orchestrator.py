@@ -34,6 +34,7 @@ from ict_lab.configs.grid import load_named_configs
 from ict_lab.configs.sweep_grid import build_canonical_population
 from ict_lab.data.loader import load_symbol
 from ict_lab.engine.ablation import run_ablation_ladder
+from ict_lab.engine.dashboard import build_dashboard, compute_equity_curve_data
 from ict_lab.engine.discretion_premium import run_discretion_premium
 from ict_lab.engine.funnel import es_validation, run_funnel
 from ict_lab.engine.null_models import run_null_tests, select_reference_configs
@@ -135,6 +136,7 @@ def _config_result_rows(configs: dict, data_by_symbol: dict[str, pd.DataFrame]) 
                     "net_pnl": stats["net_pnl"],
                     "trades_per_year": stats["trades_per_year"],
                     "pct_days_with_trade": stats["pct_days_with_trade"],
+                    "pct_ambiguous_bar": stats["pct_ambiguous_bar"],
                 }
             )
     return rows
@@ -244,6 +246,9 @@ def run_parts_1_through_7(
         "era_split": era_results,
         "roll_day_sensitivity": roll_day,
         "slippage_sensitivity": slippage,
+        "named_rows": named_rows,
+        "named_configs": named_configs,
+        "reference_configs": reference_configs,
         "timings": timer.timings,
     }
 
@@ -252,6 +257,7 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shard-dir", default="runs/sweep_nq", help="Sweep checkpoint/shard directory")
     parser.add_argument("--output-dir", default="analysis/summary", help="Where to write the summary pack")
+    parser.add_argument("--dashboard-dir", default="analysis/dashboard", help="Where to write the Phase 6 results dashboard")
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--n-null-iterations", type=int, default=1000)
     parser.add_argument(
@@ -280,7 +286,14 @@ if __name__ == "__main__":
         sys.exit(0)
 
     df_es = load_symbol("ES", price_series="backadjusted")  # default include_holdout=False
-    run_parts_1_through_7(
+    result = run_parts_1_through_7(
         df_nq, df_es, population, decision, Path(args.shard_dir), Path(args.output_dir),
         n_null_iterations=args.n_null_iterations, workers=args.workers,
     )
+
+    print("=== Phase 6: results dashboard ===", file=sys.stderr)
+    equity_data = compute_equity_curve_data(
+        df_nq, "NQ", result["reference_configs"], result["named_configs"], n_null_iterations=args.n_null_iterations,
+    )
+    dashboard_paths = build_dashboard(result, equity_data, output_dir=Path(args.dashboard_dir))
+    print(f"dashboard written: {len(dashboard_paths)} files in {args.dashboard_dir}", file=sys.stderr)

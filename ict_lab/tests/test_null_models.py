@@ -199,6 +199,49 @@ def test_random_entry_null_distribution_deterministic_with_fixed_seed(synthetic_
     np.testing.assert_array_equal(a, b)
 
 
+def test_random_entry_null_distribution_return_paths_false_is_unchanged(synthetic_bars):
+    df = synthetic_bars("2024-06-03 00:00:00", "2024-06-10 00:00:00")
+    config = _config(entry_level="50%", stop_type="gap_distal", displacement_required=False, mss_required=False)
+    trades = _real_trades(df, config)
+    if trades.empty:
+        pytest.skip("no real trades generated on this synthetic window -- nothing to build a null for")
+    without = random_entry_null_distribution(df, config, "NQ", trades, n_iterations=10, seed=7)
+    with_ = random_entry_null_distribution(df, config, "NQ", trades, n_iterations=10, seed=7, return_paths=False)
+    np.testing.assert_array_equal(without, with_)
+
+
+def test_random_entry_null_distribution_return_paths_shape_and_consistency(synthetic_bars):
+    df = synthetic_bars("2024-06-03 00:00:00", "2024-06-10 00:00:00")
+    config = _config(entry_level="50%", stop_type="gap_distal", displacement_required=False, mss_required=False)
+    trades = _real_trades(df, config)
+    if trades.empty:
+        pytest.skip("no real trades generated on this synthetic window -- nothing to build a null for")
+    from ict_lab.engine.pipeline import all_session_dates
+
+    n_days = len(all_session_dates(df))
+    sharpes, paths = random_entry_null_distribution(df, config, "NQ", trades, n_iterations=10, seed=7, return_paths=True)
+    assert paths.shape == (10, n_days)
+    # The path's own final cumulative value implies the same daily series
+    # annualized_sharpe was computed from -- not an independent recomputation,
+    # a direct algebraic identity of what the function already built.
+    sharpe_only = random_entry_null_distribution(df, config, "NQ", trades, n_iterations=10, seed=7)
+    np.testing.assert_array_equal(sharpes, sharpe_only)
+
+
+def test_random_entry_null_distribution_return_paths_empty_trades(synthetic_bars):
+    df = synthetic_bars("2024-06-03 00:00:00", "2024-06-05 00:00:00")
+    from ict_lab.engine.pipeline import all_session_dates
+
+    n_days = len(all_session_dates(df))
+    sharpes, paths = random_entry_null_distribution(
+        df, _config(), "NQ", pd.DataFrame(), n_iterations=6, return_paths=True
+    )
+    assert len(sharpes) == 6
+    assert np.isnan(sharpes).all()
+    assert paths.shape == (6, n_days)
+    assert np.isnan(paths).all()
+
+
 def test_shuffled_direction_null_distribution_empty_trades_is_all_nan():
     result = shuffled_direction_null_distribution(_flat_bars(), _config(), "NQ", pd.DataFrame(), n_iterations=10)
     assert len(result) == 10

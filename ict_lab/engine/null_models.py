@@ -69,12 +69,19 @@ def percentile_of_real_result(real_value: float, null_distribution: np.ndarray) 
     return float((valid <= real_value).mean() * 100)
 
 
+def _daily_pnl_series(values: np.ndarray, dates: list, all_days: pd.DatetimeIndex) -> pd.Series:
+    """Per-day summed PnL reindexed to all_days (0 on no-trade days) --
+    shared by _sharpe_from_daily (Sharpe of this series) and, with
+    return_paths=True, random_entry_null_distribution's real per-iteration
+    equity path (cumsum of this series)."""
+    daily = pd.Series(values, index=pd.DatetimeIndex(dates)).groupby(level=0).sum()
+    return daily.reindex(all_days, fill_value=0.0)
+
+
 def _sharpe_from_daily(values: np.ndarray, dates: list, all_days: pd.DatetimeIndex) -> float:
     if len(values) == 0:
         return float("nan")
-    daily = pd.Series(values, index=pd.DatetimeIndex(dates)).groupby(level=0).sum()
-    daily = daily.reindex(all_days, fill_value=0.0)
-    return annualized_sharpe(daily)
+    return annualized_sharpe(_daily_pnl_series(values, dates, all_days))
 
 
 def _simulate_null_trade_net_pnl(
@@ -161,18 +168,29 @@ def random_entry_null_distribution(
     trades: pd.DataFrame,
     n_iterations: int = N_ITERATIONS,
     seed: int | None = NULL_SEED,
-) -> np.ndarray:
+    return_paths: bool = False,
+) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
+    """return_paths=True additionally returns a (n_iterations, len(all_days))
+    array of each iteration's own cumulative net-PnL path, reindexed to
+    all_session_dates(df_1m) -- real per-substitute-trade paths (not a
+    band derived after the fact from the Sharpe distribution's summary
+    stats), used for Phase 6's equity-curve null shading. Default False
+    is unchanged from before this option existed: every existing caller
+    still gets back exactly one array."""
+    all_days = all_session_dates(df_1m)
     if trades.empty:
-        return np.full(n_iterations, np.nan)
+        sharpes = np.full(n_iterations, np.nan)
+        return (sharpes, np.full((n_iterations, len(all_days)), np.nan)) if return_paths else sharpes
 
     cost_model = COST_MODELS[symbol]
-    all_days = all_session_dates(df_1m)
     rng = np.random.default_rng(seed)
     trial_inputs = _null_trial_inputs(df_1m, config, trades)
     if not trial_inputs:
-        return np.full(n_iterations, np.nan)
+        sharpes = np.full(n_iterations, np.nan)
+        return (sharpes, np.full((n_iterations, len(all_days)), np.nan)) if return_paths else sharpes
 
     results = np.empty(n_iterations)
+    paths = np.empty((n_iterations, len(all_days))) if return_paths else None
     for i in range(n_iterations):
         net_pnls, dates = [], []
         for trial in trial_inputs:
@@ -187,8 +205,11 @@ def random_entry_null_distribution(
             )
             net_pnls.append(net)
             dates.append(trial["session_date"])
-        results[i] = _sharpe_from_daily(np.array(net_pnls), dates, all_days)
-    return results
+        daily = _daily_pnl_series(np.array(net_pnls), dates, all_days)
+        results[i] = annualized_sharpe(daily)
+        if return_paths:
+            paths[i] = daily.cumsum().to_numpy()
+    return (results, paths) if return_paths else results
 
 
 def shuffled_direction_null_distribution(

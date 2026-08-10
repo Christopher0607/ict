@@ -350,7 +350,65 @@ Read it before touching this repo. The short version:
   environment's compute. The code took that answer at face value instead
   of working around it. Phases 6 onward remain similarly gated until both
   the data and adequate compute exist.
-- [ ] Phase 6 — results dashboard
+- [~] Phase 6 — results dashboard: code-complete, 407 tests passing (up
+      from 366 before this phase). `engine/dashboard.py` renders all 13
+      spec-named panels as standalone 1920×1080 PNGs plus a single
+      self-contained dark-theme `index.html` (all panels embedded as
+      base64 images, no external files/CDNs) — every `panel_*` function
+      is a pure function over already-computed data (mirrors
+      `summary_pack.py`'s writers), so each one is unit-tested against
+      hand-built fixtures independent of a real sweep.
+      - Panels 1-12 draw directly from Phase 5's `run_parts_1_through_7`
+        result: the funnel (a descending bar chart, with an ES-validation
+        bar appended from `es_validation`'s own `cross_symbol_survivor`
+        count — Part 2 itself never computes a distinct "profitable
+        gross" stage, so the panel renders exactly what the funnel
+        measured rather than inventing a stage to match Phase 6's own
+        looser prompt wording), net-Sharpe population vs. the headline
+        reference config's random-entry null, the trade-frequency
+        spectrum (log x-axis, named configs marked), the ablation ladder
+        (rung 6's LOOKAHEAD bar in red), real result vs. all three null
+        distributions, NQ vs. ES Sharpe scatter for survivors, a
+        per-year avg-R heatmap, the era split, the discretion premium
+        (one big number plus supporting detail), named-configs win rate
+        against the 70-80% claim band, cost/slippage sensitivity, and
+        percent of trades on the ambiguous-bar assumption. Every panel
+        renders an honest "no data"/"no survivors" placeholder instead of
+        a fabricated number whenever a stage produced nothing.
+      - Panel 13 (equity curves) needed data Part 1-7's summary schema
+        doesn't retain — real per-config trade logs and, for an honest
+        null "band" (not a statistic-derived illustration), the null
+        model's own per-iteration cumulative-PnL paths. Rather than
+        fabricate a band from the Sharpe distribution's summary stats,
+        `random_entry_null_distribution` (Phase 5's `null_models.py`)
+        gained a `return_paths=True` option that additionally returns
+        each iteration's real cumulative daily-PnL path — fully backward
+        compatible (default `False` is byte-for-byte what every existing
+        caller already got; a dedicated regression test checks the two
+        modes agree exactly). `compute_equity_curve_data` is Phase 6's
+        own prep step, run once after `run_parts_1_through_7` returns:
+        real trade logs for the headline config (the best realistic
+        survivor, or `as_taught_5m` if the funnel produced no survivors)
+        plus `as_taught_5m` and `as_traded`, and that headline config's
+        own random-entry null paths for the shaded p10-p90 band.
+      - `sweep_orchestrator.py` gained two purely additive result-dict
+        keys (`named_rows`, `reference_configs`) and one additive column
+        (`pct_ambiguous_bar` on named-config rows) — all things Part 7
+        already computed for its own reports, just not previously
+        surfaced — plus a dashboard-building step at the end of the
+        CLI's `__main__` (still behind the same human `--confirm-launch`
+        gate as the sweep itself, since the dashboard has nothing honest
+        to draw until Parts 1-7 actually ran).
+
+  **Phase 6 has nothing real to visualize, for the same reason Phase 5
+  couldn't run: no purchased data, and this sandbox's own throughput
+  still fails the sizing rule.** Every panel this environment can
+  actually produce is a synthetic-fixture placeholder or an explicit
+  "no data" message — proven correct by the test suite, not by anything
+  resembling a real backtest result. `build_dashboard`'s `caveat`
+  parameter exists specifically to stamp that fact onto the rendered page
+  itself, not just bury it in this README, whenever it runs against
+  anything but a real, completed Phase 5.
 - [ ] Phase 7 — reporting pass
 - [ ] Phase 8 — holdout (run once)
 - [ ] Phase 9 — Gate `NAS100_USDT` deployment (blocked until Phase 8 passes its
