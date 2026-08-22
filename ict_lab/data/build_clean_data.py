@@ -21,9 +21,16 @@ SERIES = ["unadjusted", "backadjusted"]
 
 def main() -> None:
     for symbol in SYMBOLS:
-        print_yearly_close_range(symbol)
+        # allow_out_of_sample here is data preparation, not analysis: caching
+        # and quality-reporting ES reveals nothing about how a strategy would
+        # perform on it. Every research path still goes through load_symbol's
+        # default refusal.
+        print_yearly_close_range(symbol, allow_out_of_sample=True)
         for series in SERIES:
-            df = load_symbol(symbol, price_series=series, include_holdout=True)
+            df = load_symbol(
+                symbol, price_series=series, include_holdout=True,
+                allow_out_of_sample=True,
+            )
             print_and_save_report(df, symbol, series)
             written = write_clean_cache(df, symbol, series)
             print(f"Wrote {len(written)} partitioned parquet file(s) for {symbol}/{series}.")

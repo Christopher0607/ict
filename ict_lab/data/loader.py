@@ -112,8 +112,15 @@ def load_symbol(
     return split_holdout(chosen, config, include_holdout=include_holdout)
 
 
-def print_yearly_close_range(symbol: str, config: DataConfig = DEFAULT_DATA_CONFIG) -> pd.DataFrame:
-    df = load_symbol(symbol, price_series="backadjusted", config=config)
+def print_yearly_close_range(
+    symbol: str,
+    config: DataConfig = DEFAULT_DATA_CONFIG,
+    allow_out_of_sample: bool = False,
+) -> pd.DataFrame:
+    df = load_symbol(
+        symbol, price_series="backadjusted", config=config,
+        allow_out_of_sample=allow_out_of_sample,
+    )
     yearly = df.groupby(df.index.year)["close"].agg(["min", "max"])
     yearly.index.name = "year"
     print(f"\n{symbol} backadjusted close range by year (holdout excluded):")
