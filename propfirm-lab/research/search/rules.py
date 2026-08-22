@@ -111,3 +111,124 @@ FAMILIES = {
     "prior_day_break": prior_day_break,
     "time_of_day": time_of_day,
 }
+
+
+# ---------------------------------------------------------------------------
+# ICT Silver Bullet
+# ---------------------------------------------------------------------------
+#
+# The setup sequence ict_lab/engine/signals.py implements: inside a killzone,
+# liquidity is swept, structure shifts against the sweep, and entry is the
+# first fair-value gap in the new direction. Each stage must occur strictly
+# after the last -- that ordering is the strategy.
+#
+# Killzones are ET clock windows, not RTH offsets: London runs 03:00-04:00 ET,
+# well before the cash open.
+KILLZONES = {
+    "london": (3 * 60, 4 * 60),
+    "ny_am": (10 * 60, 11 * 60),
+    "ny_pm": (14 * 60, 15 * 60),
+}
+
+
+def ict_silver_bullet(
+    f,
+    *,
+    killzone,
+    sweep_lookback,
+    require_mss,
+    require_displacement,
+    swing_n=5,
+    displacement_atr=1.5,
+    side="both",
+    **_,
+):
+    """Sweep, then structure shift, then the first gap in the new direction."""
+    import pandas as pd
+
+    from research.search.ict_features import (
+        displacement as _disp,
+        fair_value_gaps,
+        market_structure_shift,
+        swing_points,
+        sweeps as _sweeps,
+    )
+
+    lo_min, hi_min = KILLZONES[killzone]
+    in_kz = (f.et_minute >= lo_min) & (f.et_minute < hi_min) & ~np.isnan(f.atr)
+    if not in_kz.any():
+        return Signal(np.array([], np.int64), np.array([], np.int64))
+
+    # Liquidity taken is measured against the trailing extremes the sweep
+    # lookback defines -- levels that exist before the bar that sweeps them.
+    lvl_hi = f.range_hi.get(sweep_lookback)
+    lvl_lo = f.range_lo.get(sweep_lookback)
+    if lvl_hi is None:
+        return Signal(np.array([], np.int64), np.array([], np.int64))
+
+    swept_hi, swept_lo = _sweeps(f.high, f.low, f.close, lvl_hi, lvl_lo)
+    bull_fvg, bear_fvg = fair_value_gaps(f.high, f.low)
+    sh, sl, _, _ = swing_points(f.high, f.low, n=swing_n)
+    mss_up, mss_down = market_structure_shift(f.close, sh, sl)
+    disp = _disp(f.high, f.low, f.atr, displacement_atr)
+
+    # One group per session-killzone occurrence.
+    group = np.where(in_kz, f.session_id, -1)
+    idx = np.flatnonzero(in_kz)
+    if idx.size == 0:
+        return Signal(np.array([], np.int64), np.array([], np.int64))
+
+    tab = pd.DataFrame({
+        "i": idx,
+        "g": group[idx],
+        # A swept high is bearish: buy-side liquidity was taken and rejected.
+        "sweep_short": swept_hi[idx],
+        "sweep_long": swept_lo[idx],
+        "mss_up": mss_up[idx],
+        "mss_down": mss_down[idx],
+        "fvg_up": bull_fvg[idx],
+        "fvg_dn": bear_fvg[idx],
+        "disp": disp[idx],
+    })
+
+    out_idx, out_dir = [], []
+    for _, grp in tab.groupby("g", sort=False):
+        for direction, sweep_col, mss_col, fvg_col in (
+            (1, "sweep_long", "mss_up", "fvg_up"),
+            (-1, "sweep_short", "mss_down", "fvg_dn"),
+        ):
+            if side == "long" and direction == -1:
+                continue
+            if side == "short" and direction == 1:
+                continue
+
+            sw = grp.loc[grp[sweep_col]]
+            if sw.empty:
+                continue
+            cursor = int(sw["i"].iloc[0])
+
+            if require_displacement:
+                d = grp.loc[(grp["i"] > cursor) & grp["disp"]]
+                if d.empty:
+                    continue
+                cursor = int(d["i"].iloc[0])
+
+            if require_mss:
+                m = grp.loc[(grp["i"] > cursor) & grp[mss_col]]
+                if m.empty:
+                    continue
+                cursor = int(m["i"].iloc[0])
+
+            g = grp.loc[(grp["i"] > cursor) & grp[fvg_col]]
+            if g.empty:
+                continue
+            out_idx.append(int(g["i"].iloc[0]))
+            out_dir.append(direction)
+
+    if not out_idx:
+        return Signal(np.array([], np.int64), np.array([], np.int64))
+    order = np.argsort(out_idx)
+    return Signal(np.array(out_idx, np.int64)[order], np.array(out_dir, np.int64)[order])
+
+
+FAMILIES["ict_silver_bullet"] = ict_silver_bullet

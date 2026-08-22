@@ -28,8 +28,13 @@ from research.search.rules import FAMILIES
 OUT = Path("findings")
 
 
-def run_config(f, cfg: registry.Config) -> dict:
-    sig = FAMILIES[cfg.family](f, **cfg.params)
+def run_config(f, cfg: registry.Config, sig=None) -> dict:
+    # Signals depend only on the family parameters. Stop width and target
+    # multiple change how a trade is managed, never whether it is taken, so one
+    # signal set serves all 16 stop/target variants -- which is where most of
+    # the search's cost would otherwise go.
+    if sig is None:
+        sig = FAMILIES[cfg.family](f, **cfg.params)
     if sig.idx.size == 0:
         return {"name": cfg.name, "family": cfg.family, "trades": 0}
 
@@ -93,10 +98,21 @@ def main() -> None:
     print(f"\nrunning {len(configs):,} configurations "
           f"(grid total {registry.grid_size()['TOTAL']:,})")
 
-    rows, t0 = [], time.time()
-    for i, cfg in enumerate(configs, 1):
-        rows.append(run_config(f, cfg))
-        if i % 250 == 0 or i == len(configs):
+    # Group by the signal-determining half of each config.
+    from collections import defaultdict
+    groups: dict[tuple, list] = defaultdict(list)
+    for cfg in configs:
+        key = (cfg.family, tuple(sorted(cfg.params.items())))
+        groups[key].append(cfg)
+    print(f"  {len(groups):,} distinct signal sets to compute")
+
+    rows, t0, i = [], time.time(), 0
+    for (family, _), cfgs in groups.items():
+        sig = FAMILIES[family](f, **cfgs[0].params)
+        for cfg in cfgs:
+            rows.append(run_config(f, cfg, sig=sig))
+            i += 1
+        if i % 500 < len(cfgs) or i == len(configs):
             rate = i / (time.time() - t0)
             eta = (len(configs) - i) / rate
             print(f"  {i:,}/{len(configs):,}  {rate:.1f} cfg/s  eta {eta/60:.1f} min")

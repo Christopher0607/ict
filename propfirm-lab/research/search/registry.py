@@ -68,6 +68,23 @@ GRID: dict[str, dict[str, tuple]] = {
         "entry_minute": (0, 30, 60, 120, 180, 240, 300, 360),
         "side": ("long", "short"),
     },
+    # Added 2026-08-22, before any ICT result existed, after the first seven
+    # families returned no survivors. ict_lab implements this strategy already
+    # and is correct, but is too slow to sweep -- its own frequency diagnostic
+    # ran 60 minutes on the development window and produced no output. Giving
+    # it the same grid, cost model and correction as everything else is the
+    # only way its result is comparable.
+    #
+    # Adding it raises the trial count, and therefore the bar, for every family
+    # including the seven already run. That is the correct behaviour and the
+    # corrections are recomputed against the combined total.
+    "ict_silver_bullet": {
+        "killzone": ("london", "ny_am", "ny_pm"),
+        "sweep_lookback": (15, 30, 60),
+        "require_mss": (True, False),
+        "require_displacement": (True, False),
+        "side": SIDES,
+    },
 }
 
 

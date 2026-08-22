@@ -1,9 +1,9 @@
-# 04 · Strategy search: 8,656 configurations, no survivors
+# 04 · Strategy search: 10,384 configurations, no survivors
 
 **Date:** 2026-08-22
 **Reproduce:** `python run_strategy_search.py && python run_search_report.py`
 **Data:** NQ 1-minute, 2016-01 → 2024-08, 3,014,976 bars. Holdout never opened.
-**Pre-registration:** `research/search/registry.py`, committed at `5f44f1a` before the search ran.
+**Pre-registration:** `research/search/registry.py` — seven families committed at `5f44f1a`, the ICT family added at `4421171`, each before its results existed.
 
 ---
 
@@ -12,16 +12,21 @@
 **Nothing clears the bar.** The best configuration in the grid reaches
 **+0.128R** after costs against a required **+0.185R**, and that best result is
 statistically indistinguishable from the best you would expect to find by
-searching 8,656 coin flips.
+searching 10,384 coin flips.
 
 The holdout stays sealed. There is nothing to validate on it.
 
 | Gate | Passing |
 |---|---|
-| ≥ 200 trades | 8,608 / 8,656 |
-| ≥ 200 trades/year | 8,499 |
-| BH-FDR significant, q=0.10 | 5,684 |
+| ≥ 200 trades | 10,336 / 10,384 |
+| ≥ 200 trades/year | 8,952 |
+| BH-FDR significant, q=0.10 | 5,898 |
 | **expectancy ≥ +0.185R** | **0** |
+
+The grid grew from 8,656 to 10,384 when the ICT family was added. That raises
+the noise ceiling — expected largest |t| under the null goes from 3.855 to
+3.900 — for every family, including the seven already run, so all seven were
+re-run rather than carried over. Searching more is not free.
 
 ---
 
@@ -29,8 +34,8 @@ The holdout stays sealed. There is nothing to validate on it.
 
 | | count |
 |---|---|
-| significant, positive expectancy | 341 |
-| **significant, negative expectancy** | **5,343** |
+| significant, positive expectancy | ~350 |
+| **significant, negative expectancy** | **~5,550** |
 
 The FDR gate is detecting transaction costs, not edges. This is worth stating
 plainly because "5,684 of 8,656 configurations were statistically significant"
@@ -69,8 +74,8 @@ At a 4-ATR stop the gross expectancy is +0.0018R — zero to three decimal place
 
 ## The best result sits exactly on the noise ceiling
 
-With 8,656 two-sided trials, the expected largest |t| under a pure-noise null is
-**3.86**.
+With 10,384 two-sided trials, the expected largest |t| under a pure-noise null
+is **3.90**.
 
 The largest positive t in the entire search is **3.99**.
 
@@ -129,20 +134,75 @@ Opening-range breakout, momentum, mean reversion, range breakout, VWAP
 reversion, prior-day break, and time-of-day — 8,656 configurations over stop
 width (1–4 ATR), target (1–3R), entry window, and side.
 
-| Family | configs | median expectancy | best |
-|---|---|---|---|
-| prior_day_break | 240 | −0.0197 | +0.1161 |
-| orb | 672 | −0.0200 | +0.1464 |
-| momentum | 2,880 | −0.0397 | +0.0911 |
-| range_breakout | 960 | −0.0445 | +0.1164 |
-| time_of_day | 256 | −0.0533 | +0.0696 |
-| vwap_reversion | 720 | −0.0597 | +0.0086 |
-| mean_reversion | 2,880 | −0.0598 | +0.0830 |
+| Family | configs | median net | **median gross (pre-cost)** | best |
+|---|---|---|---|---|
+| prior_day_break | 240 | −0.0197 | **+0.0229** | +0.1161 |
+| orb | 672 | −0.0200 | **+0.0196** | +0.1464 |
+| momentum | 2,880 | −0.0397 | +0.0031 | +0.0911 |
+| range_breakout | 960 | −0.0445 | −0.0016 | +0.1164 |
+| time_of_day (null control) | 256 | −0.0533 | −0.0134 | +0.0696 |
+| vwap_reversion | 720 | −0.0597 | −0.0191 | +0.0086 |
+| mean_reversion | 2,880 | −0.0598 | −0.0212 | +0.0830 |
+| **ict_silver_bullet** | 1,728 | **−0.0868** | **−0.0394** | +0.1116 |
 
 `time_of_day` reads no price at all and was included as a near-null control. It
-is not the worst family. Two price-reading families do worse than a rule that
-enters at a fixed clock time — which is the clearest single sign that nothing
-here is reading a signal.
+is not the worst family — **four** price-reading families do worse than a rule
+that enters at a fixed clock time, which is the clearest single sign that
+nothing here is reading a signal.
+
+---
+
+## ICT Silver Bullet: worst of the eight, and its own filters are why
+
+ICT gets its own section because it is the family this project was originally
+built around, and because the result is specific rather than merely negative.
+
+`ict_lab` implements this strategy correctly — one of its trades was verified
+bar by bar against raw NQ. It is simply too slow to sweep: its own Phase 4
+frequency diagnostic ran a full 60-minute timeout on the development window and
+produced no output at all. So the detectors were re-expressed vectorized, tested
+against `ict_lab`'s own swing detector on real bars, and put through the
+identical grid, cost model and correction as everything else.
+
+**It finishes last of eight on gross expectancy** — −0.0394R before costs,
+three times worse than the null control that reads no price. This is not a
+transaction-cost problem; the signal is actively harmful.
+
+**Its two distinctive filters both make it significantly worse.** Paired
+comparisons hold killzone, sweep lookback, side, stop and target fixed and flip
+one gate:
+
+| Gate turned on | paired configs | mean change | t | share made worse |
+|---|---|---|---|---|
+| `require_mss` | 55 | **−0.0178 R** | **−3.78** | 73% |
+| `require_displacement` | 122 | **−0.0134 R** | **−6.84** | 74% |
+
+These t-statistics are not subject to the max-of-search inflation that governs
+the headline result: they measure a consistent directional effect across many
+paired configurations, not the best of many draws.
+
+Consistent with that, **the best-performing ICT configurations are the ones with
+ICT's distinctive machinery switched off**. All gates off gives a median of
+−0.0749R; all gates on gives −0.1042R. The market-structure-shift and
+displacement filters — the parts that make Silver Bullet *Silver Bullet* rather
+than "buy a gap after a sweep" — subtract value monotonically.
+
+Frequency is the other problem. Only **26% of ICT configurations trade often
+enough to qualify** (≥200/year); the median is 142 trades/year. A prop-firm
+evaluation cannot be completed at that rate with a per-trade edge anywhere near
+zero.
+
+The best ICT configuration reaches t = 2.11 against a noise ceiling of 3.90.
+Not close.
+
+**What this does not test.** The reimplementation covers the core sequence —
+killzone, liquidity sweep, optional structure shift, optional displacement,
+entry on the first fair-value gap. It does not cover `ict_lab`'s bias methods,
+its sweep-universe presets, its entry-level and stop-type choices, or
+next-liquidity targeting. A fuller sweep of those would need the original
+engine to be fast enough to run, which it is not. What can be said is that the
+core sequence is worse than no signal at all, and that adding more of ICT's own
+gating makes it worse still.
 
 ---
 

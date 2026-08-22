@@ -37,6 +37,8 @@ class FeatureSet:
     session_end_idx: np.ndarray   # last bar index of this bar's session
     minutes_into_rth: np.ndarray  # -1 outside RTH
     is_rth: np.ndarray
+    et_minute: np.ndarray         # minutes since ET midnight; London killzone
+                                  # sits outside RTH and is unreachable otherwise
 
     atr: np.ndarray               # trailing ATR in points
     ret: dict[int, np.ndarray]    # lookback -> trailing return in points
@@ -77,6 +79,8 @@ def build(
     session_end_idx = _session_end_index(session_id)
     is_rth = d["is_rth"].to_numpy(bool)
     minutes_into_rth = _minutes_into_rth(d, is_rth)
+    et = d["et"]
+    et_minute = (et.dt.hour * 60 + et.dt.minute).to_numpy(np.int64)
 
     # True range, then a trailing simple ATR. shift(1) so the current bar's own
     # range never informs the stop distance used to enter on it.
@@ -108,7 +112,7 @@ def build(
     return FeatureSet(
         ts=d["ts_open"].to_numpy(), open=o, high=h, low=l, close=c, volume=v,
         session_id=session_id, session_end_idx=session_end_idx,
-        minutes_into_rth=minutes_into_rth, is_rth=is_rth,
+        minutes_into_rth=minutes_into_rth, is_rth=is_rth, et_minute=et_minute,
         atr=atr, ret=ret, range_hi=range_hi, range_lo=range_lo,
         vwap=vwap, rel_volume=rel_volume,
         prior_high=prior_high, prior_low=prior_low, prior_close=prior_close,
