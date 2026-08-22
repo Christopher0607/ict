@@ -3,7 +3,13 @@ __pycache__/
 .pytest_cache/
 .venv/
 venv/
-data/
+# anchored: an unanchored 'data/' also swallowed research/data/ source files
+/data/
 *.dbn.zst
 *.parquet
 .env
+
+# Databento cache -- downloaded data costs money; never commit it
+research/cache/
+*.dbn
+*.dbn.zst
