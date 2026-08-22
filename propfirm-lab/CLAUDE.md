@@ -88,8 +88,9 @@ trailing lock、日损上限、以及每条提款闸门的「刚好触发/刚好
 ```bash
 pip install -r requirements.txt
 python -m pytest tests -q              # 32 个测试
-python run_edge_curve.py --quick       # 粗跑，约 1 分钟
-python run_edge_curve.py               # 正式跑
+python run_edge_curve.py --quick       # 粗跑，约 20 秒
+python run_edge_curve.py               # 正式跑，约 15 分钟
+# 注意：--quick 会覆盖 findings/ 里的正式跑结果
 ```
 
 ## 当前状态

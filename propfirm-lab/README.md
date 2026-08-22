@@ -88,8 +88,8 @@ rather than picking one and pretending it is known.
 ```bash
 pip install -r requirements.txt
 python -m pytest tests -q          # 32 tests
-python run_edge_curve.py --quick   # coarse, ~1 min
-python run_edge_curve.py           # the real run
+python run_edge_curve.py --quick   # coarse, ~20s
+python run_edge_curve.py           # the real run, ~15 min
 ```
 
 `tests/test_sim_validation.py::test_gamblers_ruin_closed_form` is the gate. If
