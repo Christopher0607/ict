@@ -14,4 +14,11 @@ class DataConfig:
     holdout_cutoff: pd.Timestamp | None = None
 
 
-DEFAULT_DATA_CONFIG = DataConfig()
+# Pinned rather than auto-derived. The data now in data/raw/ ends 2026-08-21,
+# so `max - 2 years` would resolve to 2024-08-21 -- one day off from the
+# boundary propfirm-lab/research/data/holdout.py enforces, and a one-day
+# disagreement between two holdout definitions is the kind of thing that goes
+# unnoticed until it has already leaked.
+DEFAULT_DATA_CONFIG = DataConfig(
+    holdout_cutoff=pd.Timestamp("2024-08-22", tz="UTC"),
+)

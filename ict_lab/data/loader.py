@@ -60,11 +60,24 @@ def _add_is_roll_day(df: pd.DataFrame, rolls: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# ES is the out-of-sample INSTRUMENT: it exists to test configurations that
+# were chosen without it. The pipeline already enforces that by ordering --
+# es_validation runs after the funnel -- but ordering is not a barrier against
+# someone loading ES while exploring and letting what they see inform a choice.
+# Reaching it requires saying so.
+OUT_OF_SAMPLE_SYMBOLS = frozenset({"ES"})
+
+
+class OutOfSampleAccess(RuntimeError):
+    """Raised when ES is loaded without an explicit opt-in."""
+
+
 def load_symbol(
     symbol: str,
     price_series: str = "backadjusted",
     include_holdout: bool = False,
     config: DataConfig = DEFAULT_DATA_CONFIG,
+    allow_out_of_sample: bool = False,
 ) -> pd.DataFrame:
     """Loads one symbol's OHLCV series. Backadjusted drives all strategy
     logic; pass price_series="unadjusted" only for chart rendering and manual
@@ -74,6 +87,14 @@ def load_symbol(
     """
     if price_series not in ("backadjusted", "unadjusted"):
         raise ValueError('price_series must be "backadjusted" or "unadjusted"')
+
+    if symbol in OUT_OF_SAMPLE_SYMBOLS and not allow_out_of_sample:
+        raise OutOfSampleAccess(
+            f"{symbol} is the out-of-sample instrument and is not loadable by "
+            f"default. It validates configurations selected without it, so "
+            f"looking at it during selection destroys what it is for. Pass "
+            f"allow_out_of_sample=True only from a validation step."
+        )
 
     backadjusted = _read_raw_parquet(symbol, "backadjusted")
     unadjusted = _read_raw_parquet(symbol, "unadjusted")

@@ -285,7 +285,11 @@ if __name__ == "__main__":
         )
         sys.exit(0)
 
-    df_es = load_symbol("ES", price_series="backadjusted")  # default include_holdout=False
+    # The one legitimate ES load: this is the cross-symbol validation step, and
+    # it runs after the funnel has already chosen its survivors from NQ alone.
+    df_es = load_symbol(
+        "ES", price_series="backadjusted", allow_out_of_sample=True
+    )  # default include_holdout=False
     result = run_parts_1_through_7(
         df_nq, df_es, population, decision, Path(args.shard_dir), Path(args.output_dir),
         n_null_iterations=args.n_null_iterations, workers=args.workers,

@@ -89,3 +89,29 @@ def test_missing_required_columns_raises(raw_dir):
     ).to_csv(raw_dir / "NQ_rolls.csv", index=False)
     with pytest.raises(ValueError, match="missing columns"):
         loader_mod.load_symbol("NQ", price_series="backadjusted")
+
+
+# ---------------------------------------------------------------------------
+# out-of-sample instrument guard
+# ---------------------------------------------------------------------------
+
+
+def test_es_is_not_loadable_by_default(raw_dir):
+    """ES validates configs chosen without it, so reaching it must be deliberate."""
+    _write_symbol_files(raw_dir, "ES")
+    with pytest.raises(loader_mod.OutOfSampleAccess, match="out-of-sample instrument"):
+        loader_mod.load_symbol("ES", price_series="backadjusted")
+
+
+def test_es_loads_with_an_explicit_opt_in(raw_dir):
+    _write_symbol_files(raw_dir, "ES")
+    df = loader_mod.load_symbol(
+        "ES", price_series="backadjusted", allow_out_of_sample=True, include_holdout=True
+    )
+    assert not df.empty
+
+
+def test_nq_is_unaffected_by_the_guard(raw_dir):
+    _write_symbol_files(raw_dir, "NQ")
+    df = loader_mod.load_symbol("NQ", price_series="backadjusted", include_holdout=True)
+    assert not df.empty
