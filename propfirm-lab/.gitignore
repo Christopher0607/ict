@@ -4,10 +4,17 @@ __pycache__/
 .venv/
 venv/
 # anchored: an unanchored 'data/' also swallowed research/data/ source files
-/data/
+/data/*
 *.dbn.zst
 *.parquet
 .env
+
+# ...but the exported dataset is the ONLY copy of paid data and must be kept.
+# The Databento account can no longer afford to re-download it.
+!/data/
+!/data/*.parquet
+!/data/*.csv
+!/data/README.md
 
 # Databento cache -- downloaded data costs money; never commit it
 research/cache/
