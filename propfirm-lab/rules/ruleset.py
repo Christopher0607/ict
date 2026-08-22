@@ -62,11 +62,29 @@ class Ruleset:
     # Hard intraday loss cap measured from the day's starting equity.
     daily_loss_limit: float | None = None
 
-    # --- funded-stage payout gates ---------------------------------------
-    # No single day's profit may exceed this fraction of total profit since
-    # the last payout. 0.50 => a day worth more than half your profit blocks
-    # the withdrawal until you trade more days.
+    # --- consistency ------------------------------------------------------
+    # No single day's profit may exceed this fraction of the total. Firms
+    # apply it at two different points and not always with the same value:
+    # `consistency_pct_eval` gates *passing the evaluation*, while
+    # `consistency_pct` gates *withdrawing from a funded account*. Lucid Flex
+    # is the case that forces them apart -- 50% to pass, nothing at all once
+    # funded.
+    consistency_pct_eval: float | None = None
     consistency_pct: float | None = None
+
+    # --- funded-stage payout gates ----------------------------------------
+    # Ceiling on a single withdrawal. Lucid pays min(50% of cycle profit,
+    # $2,000); the half it keeps back stays in the account and pushes equity
+    # further above the locked floor, so withdrawing actually makes the
+    # account safer over time.
+    payout_pct_of_profit: float | None = None
+    payout_cap: float | None = None
+
+    # Requesting a payout snaps the drawdown floor up to this absolute level.
+    # On Lucid that is $50,100 regardless of where the trailing floor had got
+    # to, which makes an early first payout genuinely expensive: take $500 at
+    # $51,000 and you are left with $400 of room instead of $1,900.
+    payout_resets_floor_to: float | None = None
     # Days with at least `qualifying_day_min_profit` of profit.
     min_trading_days: int = 0
     qualifying_day_min_profit: float = 0.0
@@ -91,8 +109,12 @@ class Ruleset:
             raise ValueError("profit_target must be positive")
         if self.max_drawdown <= 0:
             raise ValueError("max_drawdown must be positive")
-        if self.consistency_pct is not None and not 0 < self.consistency_pct <= 1:
-            raise ValueError("consistency_pct must be in (0, 1]")
+        for name in ("consistency_pct", "consistency_pct_eval", "payout_pct_of_profit"):
+            v = getattr(self, name)
+            if v is not None and not 0 < v <= 1:
+                raise ValueError(f"{name} must be in (0, 1]")
+        if self.payout_cap is not None and self.payout_cap <= 0:
+            raise ValueError("payout_cap must be positive")
         if not 0 < self.profit_split <= 1:
             raise ValueError("profit_split must be in (0, 1]")
         if self.drawdown_type is DrawdownType.STATIC and self.trailing_lock_at is not None:
@@ -152,6 +174,7 @@ _APEX_50K_INTRADAY = Ruleset(
     drawdown_type=DrawdownType.INTRADAY_TRAILING,
     trailing_lock_at=50_100.0,  # start + $100, then frozen
     daily_loss_limit=None,      # Apex has no daily loss limit
+    consistency_pct_eval=0.50,
     consistency_pct=0.50,       # tightened from 30% to 50% in the 4.0 overhaul
     min_trading_days=5,
     qualifying_day_min_profit=50.0,
@@ -180,6 +203,7 @@ _TOPSTEP_50K = Ruleset(
     drawdown_type=DrawdownType.EOD_TRAILING,
     trailing_lock_at=50_000.0,  # stops trailing once it reaches the start balance
     daily_loss_limit=1_000.0,
+    consistency_pct_eval=0.50,
     consistency_pct=0.50,
     min_trading_days=5,
     qualifying_day_min_profit=200.0,
@@ -208,6 +232,7 @@ _MFFU_50K = Ruleset(
     drawdown_type=DrawdownType.EOD_TRAILING,
     trailing_lock_at=50_000.0,
     daily_loss_limit=1_000.0,
+    consistency_pct_eval=0.40,
     consistency_pct=0.40,
     min_trading_days=5,
     qualifying_day_min_profit=0.0,
@@ -221,11 +246,50 @@ _MFFU_50K = Ruleset(
     notes="Allowed algorithmic trading from July 2025. No activation fee.",
 )
 
+
+_LUCID_50K_FLEX = Ruleset(
+    firm="Lucid",
+    account="50k Flex",
+    effective_date=date(2026, 8, 1),
+    source="Lucid public rules + LucidFlex account pages, Aug 2026",
+    starting_balance=50_000.0,
+    profit_target=3_000.0,
+    max_drawdown=2_000.0,
+    drawdown_type=DrawdownType.EOD_TRAILING,
+    trailing_lock_at=50_100.0,   # locks once a close clears 52,100
+    daily_loss_limit=None,       # Flex is the Lucid account with no DLL anywhere
+    consistency_pct_eval=0.50,   # to pass
+    consistency_pct=None,        # ...and nothing at all once funded
+    min_trading_days=0,          # a one-day pass is possible in principle
+    qualifying_day_min_profit=0.0,
+    safety_net=None,             # no buffer balance required
+    min_payout=500.0,
+    payout_pct_of_profit=0.50,
+    payout_cap=2_000.0,
+    payout_resets_floor_to=50_100.0,
+    max_payouts=None,
+    profit_split=0.90,
+    eval_fee=105.0,              # promo price; see notes
+    activation_fee=0.0,
+    monthly_fee=0.0,
+    notes=(
+        "List price ~$149 (some sources ~$136); 30-40% promo codes are "
+        "routine, so ~$85-105 is the realistic paid price. One-time fee: no "
+        "activation, no rebills. Bots, EAs and trade copiers are explicitly "
+        "permitted; HFT and hedging are not. ProjectX/LucidX support was "
+        "discontinued in December 2025 -- automation goes through Rithmic or "
+        "Tradovate. Two mechanics make this account unlike the others: a "
+        "payout is capped at min(50% of cycle profit, $2,000), and requesting "
+        "one snaps the max loss limit up to $50,100."
+    ),
+)
+
 RULESETS: dict[str, Ruleset] = {
     "apex_50k_intraday": _APEX_50K_INTRADAY,
     "apex_50k_eod": _APEX_50K_INTRADAY.with_drawdown_type(DrawdownType.EOD_TRAILING),
     "topstep_50k": _TOPSTEP_50K,
     "mffu_50k": _MFFU_50K,
+    "lucid_50k_flex": _LUCID_50K_FLEX,
 }
 
 

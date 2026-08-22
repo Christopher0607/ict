@@ -56,6 +56,14 @@ the way up to +0.2R.
 If the goal is *stable* profit rather than lottery-mean profit, the second
 number is the target. That is the bar any strategy in `research/` has to clear.
 
+**4. Which account you buy moves that bar, and not the way payout size suggests.**
+Lucid 50k Flex caps every payout at min(50% of cycle profit, $2,000), which
+clips a good trader's upside eightfold against TopStep — and simultaneously
+gives it the highest P(profit) of any account here across the entire realistic
+edge range, and the lowest median break-even at **+0.185R**. It is the best
+account for stability and the worst for upside. Write-up in
+[`findings/02_lucid_vs_apex.md`](findings/02_lucid_vs_apex.md).
+
 ## Layout
 
 ```
@@ -87,7 +95,7 @@ rather than picking one and pretending it is known.
 
 ```bash
 pip install -r requirements.txt
-python -m pytest tests -q          # 32 tests
+python -m pytest tests -q          # 45 tests
 python run_edge_curve.py --quick   # coarse, ~20s
 python run_edge_curve.py           # the real run, ~15 min
 ```

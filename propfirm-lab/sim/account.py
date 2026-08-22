@@ -129,12 +129,44 @@ def _first_true(mask: np.ndarray) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _consistent_pass_index(
+    equity: np.ndarray,
+    days: np.ndarray,
+    rs: Ruleset,
+    *,
+    target_equity: float,
+    opening_equity: float,
+) -> int:
+    """First mark at which the evaluation is genuinely passed.
+
+    Evaluated at day closes, because the consistency rule is stated over
+    closed days. The account must be at or above the target *and* have no
+    single day worth more than ``consistency_pct_eval`` of its total profit.
+    A trader who clears the whole target in one session has hit the number but
+    has not passed; they have to keep trading until the rest of the days
+    dilute that day's share.
+    """
+    starts, ends = _day_boundaries(days)
+    closes = equity[ends]
+    profits = closes - np.concatenate(([opening_equity], closes[:-1]))
+    cum = closes - opening_equity
+
+    ok = closes >= target_equity
+    ok &= cum > 0
+    ok &= np.maximum.accumulate(profits) <= rs.consistency_pct_eval * cum + 1e-9
+
+    idx = np.flatnonzero(ok)
+    return int(ends[idx[0]]) if idx.size else -1
+
+
 def simulate_stage(
     equity: np.ndarray,
     days: np.ndarray,
     rs: Ruleset,
     *,
     target_equity: float | None = None,
+    min_floor: float | None = None,
+    opening_equity: float | None = None,
 ) -> StageResult:
     """Walk one equity path until it passes, dies, or the path runs out.
 
@@ -153,12 +185,23 @@ def simulate_stage(
         raise ValueError("days must be non-decreasing")
 
     floor = _floor_series(equity, days, rs)
+    if min_floor is not None:
+        np.maximum(floor, min_floor, out=floor)
     breach_dd = _first_true(equity <= floor)
 
     daily_floor = _daily_loss_floor(equity, days, rs)
     breach_daily = _first_true(equity <= daily_floor) if daily_floor is not None else -1
 
-    hit_target = _first_true(equity >= target_equity) if target_equity is not None else -1
+    if target_equity is None:
+        hit_target = -1
+    elif rs.consistency_pct_eval is None:
+        hit_target = _first_true(equity >= target_equity)
+    else:
+        hit_target = _consistent_pass_index(
+            equity, days, rs,
+            target_equity=target_equity,
+            opening_equity=rs.starting_balance if opening_equity is None else opening_equity,
+        )
 
     # Earliest event wins. A drawdown breach and a target hit cannot land on
     # the same mark (the target is always above the floor), so ties are not
@@ -198,6 +241,26 @@ def _daily_profit(equity: np.ndarray, days: np.ndarray, opening_equity: float) -
     return closes - prev_closes
 
 
+def _withdrawable(equity_now: float, rs: Ruleset) -> float:
+    """Cash that can actually leave the account right now, before the split.
+
+    Three ceilings, any of which may be absent: what sits above the balance
+    you must retain, a percentage of the cycle's profit, and a hard per-payout
+    cap. Lucid applies all three; Apex applies only the first.
+    """
+    keep = rs.starting_balance
+    if rs.safety_net_equity is not None:
+        keep = max(keep, rs.safety_net_equity)
+
+    amount = equity_now - keep
+    profit = equity_now - rs.starting_balance
+    if rs.payout_pct_of_profit is not None:
+        amount = min(amount, rs.payout_pct_of_profit * profit)
+    if rs.payout_cap is not None:
+        amount = min(amount, rs.payout_cap)
+    return max(0.0, amount)
+
+
 def payout_gate(
     daily_profit: np.ndarray,
     equity_now: float,
@@ -226,11 +289,7 @@ def payout_gate(
         if best_day > rs.consistency_pct * total_profit + 1e-9:
             return False, 0.0, "consistency"
 
-    # Withdraw everything above whichever floor we must keep intact.
-    keep = rs.starting_balance
-    if rs.safety_net_equity is not None:
-        keep = max(keep, rs.safety_net_equity)
-    amount = max(0.0, equity_now - keep)
+    amount = _withdrawable(equity_now, rs)
 
     if amount < rs.min_payout:
         return False, 0.0, "min_payout"
@@ -247,8 +306,15 @@ def first_payout_day(
     daily_profit: np.ndarray,
     opening_equity: float,
     rs: Ruleset,
+    *,
+    withdraw_at_profit: float = 0.0,
 ) -> tuple[int, float]:
     """The earliest day this cycle clears every payout gate.
+
+    ``withdraw_at_profit`` holds the payout back until the cycle has made at
+    least that much, which is a real decision on rulesets that snap the
+    drawdown floor up on withdrawal: taking the money early buys cash at the
+    price of trading room.
 
     Returns ``(day_offset, amount)``, or ``(-1, 0.0)`` if the cycle never
     qualifies. Traders withdraw as soon as they are allowed to, so modelling a
@@ -265,6 +331,8 @@ def first_payout_day(
     qualifying = np.cumsum(daily_profit >= max(rs.qualifying_day_min_profit, 1e-9))
     ok = qualifying >= rs.min_trading_days
     ok &= cum > 0
+    if withdraw_at_profit > 0:
+        ok &= cum >= withdraw_at_profit
 
     if rs.safety_net_equity is not None:
         ok &= equity >= rs.safety_net_equity
@@ -276,7 +344,13 @@ def first_payout_day(
     keep = rs.starting_balance
     if rs.safety_net_equity is not None:
         keep = max(keep, rs.safety_net_equity)
-    withdrawable = np.maximum(0.0, equity - keep)
+    withdrawable = equity - keep
+    profit = equity - rs.starting_balance
+    if rs.payout_pct_of_profit is not None:
+        withdrawable = np.minimum(withdrawable, rs.payout_pct_of_profit * profit)
+    if rs.payout_cap is not None:
+        withdrawable = np.minimum(withdrawable, rs.payout_cap)
+    withdrawable = np.maximum(0.0, withdrawable)
     ok &= withdrawable >= rs.min_payout
 
     idx = np.flatnonzero(ok)
@@ -314,6 +388,7 @@ def simulate_lifecycle(
     rs: Ruleset,
     *,
     trading_days_per_month: int = 21,
+    withdraw_at_profit: float = 0.0,
 ) -> LifecycleResult:
     """Buy one account and run it until it dies or the path runs out.
 
@@ -328,7 +403,11 @@ def simulate_lifecycle(
     rather than assumed away.
     """
     fees = rs.eval_fee
-    ev = simulate_stage(eval_equity, eval_days, rs, target_equity=rs.target_equity)
+    ev = simulate_stage(
+        eval_equity, eval_days, rs,
+        target_equity=rs.target_equity,
+        opening_equity=rs.starting_balance,
+    )
 
     if ev.outcome is not Outcome.PASSED:
         days = ev.stop_day + 1
@@ -354,17 +433,23 @@ def simulate_lifecycle(
     fn: StageResult | None = None
     death: Outcome | None = None
     funded_days_used = 0
+    # Some firms snap the drawdown floor up once you have taken a payout.
+    min_floor: float | None = None
 
     while cursor < funded_equity.size:
         seg_equity = funded_equity[cursor:] - offset
         seg_days = funded_days[cursor:]
 
-        fn = simulate_stage(seg_equity, seg_days, rs, target_equity=None)
+        fn = simulate_stage(
+            seg_equity, seg_days, rs, target_equity=None, min_floor=min_floor
+        )
         died = fn.outcome is not Outcome.RAN_OUT_OF_PATH
 
         starts, ends = _day_boundaries(seg_days)
         prof = _daily_profit(seg_equity, seg_days, opening)
-        pay_day, amount = first_payout_day(prof, opening, rs)
+        pay_day, amount = first_payout_day(
+            prof, opening, rs, withdraw_at_profit=withdraw_at_profit
+        )
 
         # A payout only lands if the account was still alive at that day's close.
         pay_ok = pay_day >= 0 and ends[pay_day] <= fn.stop_index
@@ -383,6 +468,8 @@ def simulate_lifecycle(
         payouts.append(amount)
         blocked_by = None
         funded_days_used += pay_day + 1
+        if rs.payout_resets_floor_to is not None:
+            min_floor = rs.payout_resets_floor_to
 
         if rs.max_payouts is not None and len(payouts) >= rs.max_payouts:
             break

@@ -23,20 +23,11 @@ import numpy as np
 from paths import TradeModel
 from rules import DrawdownType, get_ruleset, list_rulesets
 from sim.study import study_eval, study_lifecycle
+from viz import GRID, INK, INK_2, MUTED, SERIES, SURFACE, place_labels, style_axes
 
 OUT_DIR = Path("findings")
 FIG_DIR = OUT_DIR / "figures"
 
-# dataviz categorical slots 1-4, light mode. Validated:
-#   node scripts/validate_palette.js "#2a78d6,#eb6834,#1baf7a,#eda100" --mode light
-# All checks pass; the contrast WARN on aqua/yellow is discharged by direct
-# labels on every line plus the table in the findings document.
-SERIES = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100"]
-INK = "#0b0b0b"
-INK_2 = "#52514e"
-MUTED = "#8a8880"
-SURFACE = "#fcfcfb"
-GRID = "#e6e5e1"
 
 
 def base_model(expectancy: float, args) -> TradeModel:
@@ -95,7 +86,7 @@ def main() -> None:
 
     # -- Panel B: the money question, per real firm --------------------------
     panel_b: dict[str, dict] = {}
-    for key in ["apex_50k_intraday", "topstep_50k", "mffu_50k"]:
+    for key in ["lucid_50k_flex", "apex_50k_intraday", "topstep_50k", "mffu_50k"]:
         rs = get_ruleset(key)
         means, los, his, passes, pprof, meds = [], [], [], [], [], []
         for e in grid:
@@ -137,48 +128,6 @@ def main() -> None:
     print(f"\nwrote {OUT_DIR/'edge_curve.json'} and {FIG_DIR/'edge_curve.png'}")
 
 
-def _place_labels(ax, entries, x, *, min_gap_frac=0.062):
-    """Direct-label line ends, nudged apart so they never overlap.
-
-    Direct labels are not decoration here: two of the light-mode series sit
-    below 3:1 contrast on this surface, so the labels are what discharge that
-    (together with the tables in the findings doc).
-    """
-    lo, hi = ax.get_ylim()
-    span = hi - lo
-    items = sorted(entries, key=lambda t: t[0])
-    placed: list[float] = []
-    for y, _text, _c in items:
-        frac = (y - lo) / span
-        if placed and frac - placed[-1] < min_gap_frac:
-            frac = placed[-1] + min_gap_frac
-        placed.append(frac)
-
-    # Pushing labels apart can drive the top one off the axes and into the
-    # title. If it does, slide the whole stack back down.
-    overflow = placed[-1] - (1.0 - min_gap_frac * 0.5)
-    if overflow > 0:
-        placed = [f - overflow for f in placed]
-    for (y, text, c), frac in zip(items, placed):
-        ax.annotate(
-            text, xy=(x, y), xycoords="data",
-            xytext=(8, 0), textcoords="offset points",
-            color=c, fontsize=9, weight="bold", va="center",
-            annotation_clip=False,
-        )
-        # Re-anchor to the de-collided position when it had to move.
-        target = lo + frac * span
-        if abs(target - y) > 1e-9:
-            ax.annotate(
-                "", xy=(x, y), xytext=(x, target), xycoords="data",
-                textcoords="data", arrowprops=dict(arrowstyle="-", color=c,
-                                                   lw=0.8, alpha=0.5),
-                annotation_clip=False,
-            )
-            ax.texts[-2].set_position((8, 0))
-            ax.texts[-2].xy = (x, target)
-
-
 def plot(p: dict) -> None:
     import matplotlib
     matplotlib.use("Agg")
@@ -188,20 +137,10 @@ def plot(p: dict) -> None:
     grid = p["grid"]
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(17.5, 5.6), facecolor=SURFACE)
 
+    XLAB = "Expectancy per trade, after costs (R)"
+
     def style(ax, title, subtitle, ylab):
-        ax.set_facecolor(SURFACE)
-        for s in ("top", "right"):
-            ax.spines[s].set_visible(False)
-        for s in ("left", "bottom"):
-            ax.spines[s].set_color(GRID)
-        ax.tick_params(colors=INK_2, labelsize=9, length=0)
-        ax.grid(axis="y", color=GRID, lw=0.8)
-        ax.set_axisbelow(True)
-        ax.set_title(title, color=INK, fontsize=12.5, weight="bold", loc="left", pad=18)
-        ax.text(0, 1.015, subtitle, transform=ax.transAxes, color=INK_2,
-                fontsize=9.5, va="bottom")
-        ax.set_xlabel("Expectancy per trade, after costs (R)", color=INK_2, fontsize=9.5)
-        ax.set_ylabel(ylab, color=INK_2, fontsize=9.5)
+        style_axes(ax, title, subtitle, XLAB, ylab)
 
     # Panel A -- pass rate by drawdown rule
     labels_a = []
@@ -218,7 +157,7 @@ def plot(p: dict) -> None:
     style(ax1, "The rule costs more than the skill",
           "P(pass eval) for one 50k account, same trader, three drawdown rules",
           "P(pass evaluation)")
-    _place_labels(ax1, labels_a, grid[-1])
+    place_labels(ax1, labels_a, grid[-1])
 
     # Panel B -- net dollars per account bought
     labels_b = []
@@ -243,7 +182,7 @@ def plot(p: dict) -> None:
     style(ax2, "What one account is actually worth",
           "Mean net $ per account bought (payouts - fees), 95% CI band",
           "Net $ per account bought")
-    _place_labels(ax2, labels_b, grid[-1])
+    place_labels(ax2, labels_b, grid[-1])
 
     # Panel C -- the skew. A positive mean is not a positive outcome.
     labels_c = []
@@ -260,7 +199,7 @@ def plot(p: dict) -> None:
     style(ax3, "Why the mean lies",
           "P(this account ever ends up ahead) -- the mean rides on a thin tail",
           "P(account is profitable)")
-    _place_labels(ax3, labels_c, grid[-1])
+    place_labels(ax3, labels_c, grid[-1])
 
     fig.tight_layout(rect=(0, 0.045, 1, 1))
     fig.text(0.005, 0.012,

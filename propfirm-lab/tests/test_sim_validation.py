@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 
 from paths import TradeModel, generate_path
+from dataclasses import replace
+
 from rules import DrawdownType, get_ruleset
 from sim import Outcome, simulate_stage
 from sim.study import study_eval
@@ -34,8 +36,18 @@ def test_coin_flip_win_rate_is_half():
 
 
 def test_gamblers_ruin_closed_form():
-    """Static floor, zero edge -> P(pass) must equal D/(D+T)."""
-    rs = get_ruleset("apex_50k_intraday").with_drawdown_type(DrawdownType.STATIC)
+    """Static floor, zero edge -> P(pass) must equal D/(D+T).
+
+    The consistency rule is switched off here on purpose: the closed form
+    describes pure first passage between two absorbing barriers, and a
+    consistency gate adds a third condition that is not in that model. This
+    test exists to validate the absorbing-boundary logic, so it has to isolate
+    it. ``test_eval_consistency_lowers_the_pass_rate`` covers the gate.
+    """
+    rs = replace(
+        get_ruleset("apex_50k_intraday").with_drawdown_type(DrawdownType.STATIC),
+        consistency_pct_eval=None,
+    )
     analytic = rs.max_drawdown / (rs.max_drawdown + rs.profit_target)
     assert analytic == pytest.approx(2500 / 5500)
 
@@ -161,11 +173,33 @@ def test_daily_loss_limit_resets_each_day():
     assert simulate_stage(eq, days, rs, target_equity=None).outcome is Outcome.RAN_OUT_OF_PATH
 
 
-def test_target_reached_is_a_pass():
+def test_target_reached_in_one_day_is_not_a_pass():
+    """Clearing the whole target in a single session hits the number and
+    fails the 50% consistency rule, so the evaluation is not passed."""
     rs = get_ruleset("apex_50k_intraday")
+    assert rs.consistency_pct_eval == 0.50
+
     eq, days = _path([50_000, 53_000])
     res = simulate_stage(eq, days, rs, target_equity=rs.target_equity)
+    assert res.outcome is Outcome.RAN_OUT_OF_PATH
+
+    # Spread evenly over four days, no day is more than half the total.
+    eq = np.array([50_000, 50_750, 51_500, 52_250, 53_000], dtype=float)
+    days = np.array([0, 0, 1, 2, 3], dtype=np.int64)
+    res = simulate_stage(eq, days, rs, target_equity=rs.target_equity)
     assert res.outcome is Outcome.PASSED
+    assert res.stop_day == 3
+
+
+def test_eval_consistency_lowers_the_pass_rate():
+    """The gate must actually bind -- otherwise it is silently disabled."""
+    rs = get_ruleset("apex_50k_intraday").with_drawdown_type(DrawdownType.STATIC)
+    with_rule = study_eval(COIN_FLIP, rs, n_paths=4_000, n_days=400, seed=11)
+    without = study_eval(
+        COIN_FLIP, replace(rs, consistency_pct_eval=None),
+        n_paths=4_000, n_days=400, seed=11,
+    )
+    assert with_rule.pass_rate < without.pass_rate
 
 
 def test_earliest_event_wins():

@@ -117,6 +117,7 @@ def study_lifecycle(
     eval_days: int = 250,
     funded_days: int = 250,
     seed: int = 0,
+    withdraw_at_profit: float = 0.0,
 ) -> LifecycleStudy:
     """Buy ``n_accounts`` accounts, trade each one, and total up the damage."""
     rng = np.random.default_rng(seed)
@@ -129,7 +130,9 @@ def study_lifecycle(
     for i in range(n_accounts):
         ee, ed = generate_path(model, eval_days, rs.starting_balance, rng)
         fe, fd = generate_path(model, funded_days, rs.starting_balance, rng)
-        res = simulate_lifecycle(ee, ed, fe, fd, rs)
+        res = simulate_lifecycle(
+            ee, ed, fe, fd, rs, withdraw_at_profit=withdraw_at_profit
+        )
         nets[i] = res.net
         counts[i] = len(res.payouts)
         passed += int(res.passed_eval)
