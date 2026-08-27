@@ -47,6 +47,10 @@ class LifecycleResult:
     eval_result: StageResult | None
     funded_result: StageResult | None
     payouts: list[float] = field(default_factory=list)
+    # Day index within this account's life at which each payout landed. Needed
+    # to attribute fees and withdrawals to calendar years when an account is
+    # one link in a chain rather than the unit of analysis.
+    payout_days: list[int] = field(default_factory=list)
     death_reason: Outcome | None = None
     days_used: int = 0
     fees_paid: float = 0.0
@@ -426,6 +430,7 @@ def simulate_lifecycle(
     funded_days = np.asarray(funded_days, dtype=np.int64)
 
     payouts: list[float] = []
+    payout_days: list[int] = []
     blocked_by: str | None = None
     cursor = 0
     offset = 0.0        # everything withdrawn so far
@@ -466,6 +471,10 @@ def simulate_lifecycle(
             break
 
         payouts.append(amount)
+        # Recorded before the counter advances: funded_days_used still holds
+        # what earlier payout cycles consumed, and pay_day is the offset into
+        # this one.
+        payout_days.append(ev.stop_day + 1 + funded_days_used + pay_day)
         blocked_by = None
         funded_days_used += pay_day + 1
         if rs.payout_resets_floor_to is not None:
@@ -487,6 +496,7 @@ def simulate_lifecycle(
         eval_result=ev,
         funded_result=fn,
         payouts=payouts,
+        payout_days=payout_days,
         death_reason=death,
         days_used=total_days,
         fees_paid=fees,

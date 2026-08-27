@@ -5,6 +5,44 @@
 **Data:** NQ 1-minute, 2016-01 → 2024-08, 3,014,976 bars. Holdout never opened.
 **Pre-registration:** `research/search/registry.py` — seven families committed at `5f44f1a`, the ICT family added at `4421171`, each before its results existed.
 
+> ## ⚠ Corrections, 2026-08-26
+>
+> Two numbers in this document were wrong. **Every conclusion below survives —
+> all four move in the same direction, and that direction is worse.** Details
+> and full recomputed tables in `findings/05`.
+>
+> **1. Commission was estimated, not measured — overstated by 1.8×.** The gross
+> expectancies here were computed by converting the $4 round turn into R with an
+> all-session median ATR of 2.77. But every family in this document trades RTH
+> only, where ATR is larger, and the mean of a ratio is not the ratio of the
+> medians. Measured from the trades themselves across the same 10,336 evaluable
+> configurations:
+>
+> | | published | measured |
+> |---|---|---|
+> | commission | 0.0481 R | **0.0265 R** |
+> | gross expectancy (median) | −0.0080 R | **−0.0259 R** |
+>
+> **2. "The entire deficit is commission" is false.** Commission explains **48%**
+> of the median loss, not 100%. The other half is the signal itself losing money
+> before a single fee is charged. Every family's gross expectancy in the table
+> below is overstated by 0.011 to 0.025 R.
+>
+> **3. The stop-width table's punchline is gone.** At a 4-ATR stop the gross
+> expectancy is **−0.0061 R**, not +0.0018 R. It is still small; it is no longer
+> "zero to three decimal places", and it is no longer positive.
+>
+> **4. ICT was additionally flattered by a slippage bug.** Its London killzone is
+> 03:00–04:00 ET — entirely outside RTH — and was charged one tick of stop
+> slippage like everything else. Overnight liquidity is twelve times thinner
+> (median 1-minute volume 57 against 707), so it now pays two. ICT's own code is
+> unchanged. Corrected: median net **−0.0975 R** (published −0.0868), median gross
+> **−0.0640 R** (published −0.0394). It finishes last of eight by a wider margin
+> than reported.
+>
+> The direction of every error is the same: this document was too kind to these
+> strategies.
+
 ---
 
 ## Result
@@ -43,32 +81,37 @@ is the kind of sentence that could be quoted as encouraging.
 
 ---
 
-## Why they lose: the entire deficit is commission
+## Why they lose: about half commission, about half the signal
 
-Adding the $4 round-turn commission back:
+> **Corrected 2026-08-26.** The original version of this section estimated
+> commission from a median ATR and concluded the entire deficit was commission.
+> Measured per trade, it is roughly half. The table below is recomputed.
 
-| | median across evaluable configs |
+Adding the measured round-turn commission back:
+
+| | median across 10,336 evaluable configs |
 |---|---|
-| Net expectancy | **−0.0502 R** |
-| Commission | +0.0481 R |
-| **Gross expectancy (before costs)** | **−0.0080 R** |
+| Net expectancy | **−0.0546 R** |
+| Commission (measured per trade) | +0.0265 R |
+| **Gross expectancy (before costs)** | **−0.0259 R** |
 
-Before costs these rules are worth approximately nothing, and after costs they
-lose approximately the commission. That is what an efficient market looks like
-from the inside.
+Before costs these rules lose money, and after costs they lose roughly twice as
+much. The original reading — "worth approximately nothing before costs" — was
+too generous by a factor of three.
 
-The stop-width breakdown confirms the mechanism exactly. A fixed $4 fee is a
-larger fraction of a smaller risk, so widening the stop should shrink the net
-loss toward the gross — and it does, monotonically:
+The stop-width breakdown still confirms the mechanism. A fixed $4 fee is a
+larger fraction of a smaller risk, so widening the stop shrinks the net loss
+toward the gross — and it does, monotonically:
 
-| Stop (× ATR) | Net | Commission | Gross |
-|---|---|---|---|
-| 1.0 | −0.0978 | 0.0722 | −0.0256 |
-| 1.5 | −0.0569 | 0.0481 | −0.0088 |
-| 2.5 | −0.0291 | 0.0289 | −0.0002 |
-| 4.0 | −0.0163 | 0.0181 | **+0.0018** |
+| Stop (× ATR) | Net | Commission | Gross | *(published gross)* |
+|---|---|---|---|---|
+| 1.0 | −0.1049 | 0.0492 | **−0.0513** | *−0.0256* |
+| 1.5 | −0.0634 | 0.0323 | **−0.0286** | *−0.0088* |
+| 2.5 | −0.0352 | 0.0193 | **−0.0137** | *−0.0002* |
+| 4.0 | −0.0187 | 0.0127 | **−0.0061** | *+0.0018* |
 
-At a 4-ATR stop the gross expectancy is +0.0018R — zero to three decimal places.
+The gross expectancy is negative at every stop width. The widest stop does not
+reach zero from below; it approaches it and stays underneath.
 
 ---
 
@@ -134,16 +177,23 @@ Opening-range breakout, momentum, mean reversion, range breakout, VWAP
 reversion, prior-day break, and time-of-day — 8,656 configurations over stop
 width (1–4 ATR), target (1–3R), entry window, and side.
 
-| Family | configs | median net | **median gross (pre-cost)** | best |
-|---|---|---|---|---|
-| prior_day_break | 240 | −0.0197 | **+0.0229** | +0.1161 |
-| orb | 672 | −0.0200 | **+0.0196** | +0.1464 |
-| momentum | 2,880 | −0.0397 | +0.0031 | +0.0911 |
-| range_breakout | 960 | −0.0445 | −0.0016 | +0.1164 |
-| time_of_day (null control) | 256 | −0.0533 | −0.0134 | +0.0696 |
-| vwap_reversion | 720 | −0.0597 | −0.0191 | +0.0086 |
-| mean_reversion | 2,880 | −0.0598 | −0.0212 | +0.0830 |
-| **ict_silver_bullet** | 1,728 | **−0.0868** | **−0.0394** | +0.1116 |
+> **Corrected 2026-08-26.** The gross column below is now measured per trade.
+> The published version, shown in italics, was estimated from a median ATR and
+> was too generous for every family by 0.011 to 0.025 R.
+
+| Family | configs | median net | commission | **median gross** | *published gross* | best |
+|---|---|---|---|---|---|---|
+| prior_day_break | 240 | −0.0199 | 0.0243 | **+0.0065** | *+0.0229* | +0.1161 |
+| orb | 672 | −0.0201 | 0.0246 | **+0.0046** | *+0.0196* | +0.1464 |
+| momentum | 2,880 | −0.0397 | 0.0266 | **−0.0120** | *+0.0031* | +0.0912 |
+| range_breakout | 960 | −0.0445 | 0.0263 | **−0.0155** | *−0.0016* | +0.1167 |
+| time_of_day (null control) | 256 | −0.0533 | 0.0272 | **−0.0252** | *−0.0134* | +0.0696 |
+| vwap_reversion | 720 | −0.0597 | 0.0270 | **−0.0321** | *−0.0191* | +0.0086 |
+| mean_reversion | 2,880 | −0.0599 | 0.0265 | **−0.0323** | *−0.0212* | +0.0830 |
+| **ict_silver_bullet** | 1,728 | **−0.0975** | 0.0295 | **−0.0640** | *−0.0394* | +0.0885 |
+
+Only two families have positive gross expectancy, and both are barely positive
+rather than the comfortable margin originally reported.
 
 `time_of_day` reads no price at all and was included as a near-null control. It
 is not the worst family — **four** price-reading families do worse than a rule
@@ -164,9 +214,15 @@ produced no output at all. So the detectors were re-expressed vectorized, tested
 against `ict_lab`'s own swing detector on real bars, and put through the
 identical grid, cost model and correction as everything else.
 
-**It finishes last of eight on gross expectancy** — −0.0394R before costs,
-three times worse than the null control that reads no price. This is not a
-transaction-cost problem; the signal is actively harmful.
+**It finishes last of eight on gross expectancy** — **−0.0640R** before costs
+(corrected; −0.0394R as published), two and a half times worse than the null
+control that reads no price. This is not a transaction-cost problem; the signal
+is actively harmful.
+
+Part of the correction is ICT-specific and independent of the commission error:
+its London killzone is 03:00–04:00 ET, entirely outside RTH, so every entry it
+produces there was charged one tick of stop slippage when overnight liquidity is
+twelve times thinner. It now pays two. ICT's own code is unchanged.
 
 **Its two distinctive filters both make it significantly worse.** Paired
 comparisons hold killzone, sweep lookback, side, stop and target fixed and flip
@@ -208,8 +264,8 @@ gating makes it worse still.
 
 ## What this does and does not establish
 
-**Does:** simple, well-known intraday rules on NQ have no edge before costs and
-lose the commission after, across 8.6 years and 8,656 parameterizations, with
+**Does:** simple, well-known intraday rules on NQ **lose money before costs**
+and roughly twice that after, across 8.6 years and 8,656 parameterizations, with
 multiple-testing corrections applied and the holdout untouched.
 
 **Does not:** prove no intraday edge exists. This grid covers price-derived
@@ -229,8 +285,9 @@ proportionally better result just to stand still.
 **Do not buy a prop-firm account on the strength of anything in this grid.**
 
 The bar from `findings/02` is +0.185R after costs, and the honest reading of
-this search is that these rule families sit at approximately 0.000R before
-costs. The gap is not a tuning problem.
+this search — after the corrections above — is that these rule families sit at
+**−0.026R** before costs. The gap is not a tuning problem, and it is wider than
+this document originally reported.
 
 The cheapest remaining question is whether the ICT engine — the one strategy
 family this search does not cover — does any better. Its own frequency

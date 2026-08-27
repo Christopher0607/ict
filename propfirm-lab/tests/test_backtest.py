@@ -22,7 +22,8 @@ def _bars(o, h, l):
     return np.array(o, float), np.array(h, float), np.array(l, float)
 
 
-def _run(o, h, l, sig, direction, stop, target, session_end=None, horizon=10):
+def _run(o, h, l, sig, direction, stop, target, session_end=None, horizon=10,
+         time_exit_bars=None):
     o, h, l = _bars(o, h, l)
     sig = np.array(sig, np.int64)
     if session_end is None:
@@ -34,6 +35,7 @@ def _run(o, h, l, sig, direction, stop, target, session_end=None, horizon=10):
         np.array(target, float),
         np.array(session_end, np.int64),
         horizon=horizon,
+        time_exit_bars=time_exit_bars,
     )
 
 
@@ -170,11 +172,12 @@ def test_signal_on_the_last_bar_is_dropped():
 class _F:
     """Minimal stand-in for a FeatureSet."""
 
-    def __init__(self, o, h, l, session_id):
+    def __init__(self, o, h, l, session_id, is_rth=True):
         self.open = np.array(o, float)
         self.high = np.array(h, float)
         self.low = np.array(l, float)
         self.session_id = np.array(session_id, np.int64)
+        self.is_rth = np.full(len(o), bool(is_rth))
         n = len(o)
         idx = np.arange(n)
         is_last = np.concatenate([self.session_id[1:] != self.session_id[:-1], [True]])
@@ -258,3 +261,209 @@ def test_a_signal_mid_session_still_enters():
     )
     assert len(r) == 1
     assert r.entry_idx[0] == 6
+
+
+def test_commission_r_is_measured_from_trades_not_estimated():
+    """The error this replaces: a median-ATR estimate is not the mean of ratios.
+
+    Two trades with very different risk. The true mean of COMMISSION/risk is
+    not COMMISSION divided by the mean risk, and the gap is exactly the kind
+    that corrupted the first search's gross-expectancy figures.
+    """
+    from research.search.backtest import COMMISSION_RT, simulate
+
+    o = np.array([100.0] * 6)
+    h = np.array([100.0] * 6)
+    l = np.array([100.0] * 6)
+    r = simulate(
+        h, l, o,
+        np.array([0, 2], np.int64), np.array([1, 1], np.int64),
+        np.array([1.0, 10.0]),      # risk $20 and $200
+        np.array([5.0, 50.0]),
+        np.array([5, 5], np.int64),
+        horizon=4,
+    )
+    assert len(r) == 2
+    expected = float(np.mean([COMMISSION_RT / 20.0, COMMISSION_RT / 200.0]))
+    assert r.commission_r == pytest.approx(expected)
+
+    # The naive "commission / mean risk" shortcut gives a different number.
+    naive = COMMISSION_RT / np.mean([20.0, 200.0])
+    assert abs(r.commission_r - naive) > 0.01
+
+
+def test_gross_expectancy_adds_commission_back_but_keeps_slippage():
+    from research.search.backtest import simulate
+
+    o = np.array([100.0, 100.0, 100.0])
+    h = np.array([100.0, 101.0, 110.0])
+    l = np.array([100.0, 99.0, 100.0])
+    r = simulate(
+        h, l, o, np.array([0], np.int64), np.array([1], np.int64),
+        np.array([5.0]), np.array([8.0]), np.array([2], np.int64), horizon=3,
+    )
+    assert r.gross_expectancy_r == pytest.approx(r.expectancy_r + r.commission_r)
+    assert r.gross_expectancy_r > r.expectancy_r
+
+
+def test_overnight_stops_pay_more_slippage_than_rth():
+    """Median 1-minute volume is 707 in RTH and 57 outside it. Charging the
+    same tick everywhere quietly flatters every overnight result."""
+    from research.search.backtest import (
+        STOP_SLIPPAGE_TICKS, STOP_SLIPPAGE_TICKS_ETH, TICK_SIZE, simulate,
+    )
+
+    o = np.array([100.0, 100.0, 100.0])
+    h = np.array([100.0, 101.0, 101.0])
+    l = np.array([100.0, 99.0, 90.0])
+    args = (h, l, o, np.array([0], np.int64), np.array([1], np.int64),
+            np.array([5.0]), np.array([20.0]), np.array([2], np.int64))
+
+    rth = simulate(*args, horizon=3, slippage_ticks=STOP_SLIPPAGE_TICKS)
+    eth = simulate(*args, horizon=3, slippage_ticks=STOP_SLIPPAGE_TICKS_ETH)
+
+    assert rth.hit_stop[0] and eth.hit_stop[0]
+    assert eth.exit_price[0] < rth.exit_price[0]
+    assert rth.exit_price[0] - eth.exit_price[0] == pytest.approx(TICK_SIZE)
+    assert eth.r_multiple[0] < rth.r_multiple[0]
+
+
+def test_sequential_charges_eth_slippage_outside_rth():
+    """The same path, once inside RTH and once outside, must differ."""
+    from research.search.backtest import simulate_sequential
+
+    n = 6
+    o = [100.0] * n
+    h = [100.0, 101.0, 101.0, 101.0, 101.0, 101.0]
+    l = [100.0, 99.0, 90.0, 90.0, 90.0, 90.0]
+
+    rth = simulate_sequential(
+        _F(o, h, l, [0] * n, is_rth=True), np.array([0], np.int64),
+        np.array([1], np.int64), np.array([5.0]), np.array([20.0]), horizon=4,
+    )
+    eth = simulate_sequential(
+        _F(o, h, l, [0] * n, is_rth=False), np.array([0], np.int64),
+        np.array([1], np.int64), np.array([5.0]), np.array([20.0]), horizon=4,
+    )
+    assert rth.hit_stop[0] and eth.hit_stop[0]
+    assert eth.r_multiple[0] < rth.r_multiple[0]
+
+
+# ---------------------------------------------------------------------------
+# Time exits
+# ---------------------------------------------------------------------------
+#
+# The predictability audit's only economically positive cell was a fixed
+# 60-minute hold, and until now the engine could only exit on a barrier or at
+# the close -- so the one direction worth testing was the one it could not
+# express.
+
+
+def test_time_exit_flattens_after_n_bars_at_that_bars_open():
+    """Entry at bar 1's open, three bars held (1, 2, 3), flat at bar 4's open."""
+    r = _run(
+        o=[100, 100, 100, 100, 107, 100], h=[100, 101, 101, 101, 108, 101],
+        l=[100, 99, 99, 99, 106, 99],
+        sig=[0], direction=[1], stop=[50], target=[50],
+        time_exit_bars=3,
+    )
+    assert not r.hit_stop[0] and not r.hit_target[0]
+    assert r.entry_idx[0] == 1
+    assert r.exit_idx[0] == 4
+    assert r.exit_price[0] == 107.0
+    assert r.net_pnl[0] == pytest.approx(7 * POINT_VALUE - COMMISSION_RT)
+
+
+def test_time_exit_does_not_pay_stop_slippage():
+    """It is a market exit at a price nobody was forced into, not a stop."""
+    r = _run(
+        o=[100, 100, 100, 100, 100], h=[100, 101, 101, 101, 101],
+        l=[100, 99, 99, 99, 99],
+        sig=[0], direction=[1], stop=[50], target=[50],
+        time_exit_bars=3,
+    )
+    assert r.exit_price[0] == 100.0  # the open, undisturbed
+
+
+def test_barriers_still_win_inside_the_hold():
+    """A target touched on bar 2 resolves there; the time exit never fires."""
+    r = _run(
+        o=[100, 100, 100, 100, 100], h=[100, 101, 108, 101, 101],
+        l=[100, 99, 99, 99, 99],
+        sig=[0], direction=[1], stop=[50], target=[5],
+        time_exit_bars=3,
+    )
+    assert r.hit_target[0]
+    assert r.exit_idx[0] == 2
+    assert r.exit_price[0] == 105.0
+
+
+def test_the_close_beats_a_later_time_exit():
+    """Session ends at bar 2; a 60-bar hold does not survive the close."""
+    r = _run(
+        o=[100, 100, 100, 100, 100], h=[100, 101, 101, 101, 200],
+        l=[100, 99, 99, 99, 99],
+        sig=[0], direction=[1], stop=[50], target=[50],
+        session_end=[2], time_exit_bars=8, horizon=9,
+    )
+    assert r.exit_idx[0] == 2
+    assert not r.hit_target[0]  # the bar-4 spike is the next session's
+
+
+def test_the_time_exit_beats_a_later_close():
+    """Session runs to bar 5; a 2-bar hold flattens at bar 3 regardless."""
+    r = _run(
+        o=[100, 100, 100, 103, 100, 100], h=[100, 101, 101, 104, 200, 101],
+        l=[100, 99, 99, 102, 99, 99],
+        sig=[0], direction=[1], stop=[50], target=[50],
+        session_end=[5], time_exit_bars=2,
+    )
+    assert r.exit_idx[0] == 3
+    assert r.exit_price[0] == 103.0
+    assert not r.hit_target[0]  # bar 4 is past the hold, its spike is invisible
+
+
+def test_a_barrier_after_the_time_exit_is_invisible():
+    """The stop on bar 4 is outside a 2-bar hold and must not resolve it."""
+    r = _run(
+        o=[100] * 6, h=[100, 101, 101, 101, 101, 101],
+        l=[100, 99, 99, 99, 40, 99],
+        sig=[0], direction=[1], stop=[50], target=[50],
+        session_end=[5], time_exit_bars=2,
+    )
+    assert not r.hit_stop[0]
+    assert r.exit_idx[0] == 3
+
+
+def test_time_exit_shorter_than_horizon_is_required():
+    o, h, l = _bars([100] * 5, [101] * 5, [99] * 5)
+    with pytest.raises(ValueError, match="shorter than time_exit_bars"):
+        simulate(h, l, o, np.array([0]), np.array([1]), np.array([5.0]),
+                 np.array([5.0]), np.array([4]), horizon=3, time_exit_bars=8)
+
+
+def test_time_exit_none_is_the_old_behaviour():
+    """The default path has to be byte-identical to before the parameter existed."""
+    args = dict(
+        o=[100, 100, 100, 100, 100], h=[100, 101, 101, 101, 101],
+        l=[100, 99, 99, 99, 99],
+        sig=[0], direction=[1], stop=[50], target=[50], session_end=[3],
+    )
+    r = _run(**args, time_exit_bars=None)
+    assert r.exit_idx[0] == 3 and not r.hit_stop[0] and not r.hit_target[0]
+
+
+def test_sequential_respects_the_time_exit_and_reuses_the_slot():
+    """A 2-bar hold frees the session for another entry the old exit blocked."""
+    from research.search.backtest import simulate_sequential
+
+    n = 12
+    f = _F([100] * n, [101] * n, [99] * n, [0] * n)
+    sig = np.array([0, 4], np.int64)
+    r = simulate_sequential(
+        f, sig, np.array([1, 1], np.int64),
+        np.full(2, 50.0), np.full(2, 50.0), time_exit_bars=2,
+    )
+    assert len(r) == 2
+    assert list(r.entry_idx) == [1, 5]
+    assert list(r.exit_idx) == [3, 7]

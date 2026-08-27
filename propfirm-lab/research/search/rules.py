@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import pandas as pd
 
 from research.search.features import FeatureSet
 
@@ -232,3 +233,148 @@ def ict_silver_bullet(
 
 
 FAMILIES["ict_silver_bullet"] = ict_silver_bullet
+
+
+# ---------------------------------------------------------------------------
+# Second round: the untested 71%, and hypotheses with documented priors
+# ---------------------------------------------------------------------------
+#
+# The first eight families all required is_rth, so 2,158,676 bars -- 71.6% of
+# the development window -- were never tested at all. These reach them, and add
+# four ideas chosen for their standing in the literature rather than to widen
+# coverage: overnight gap behaviour, turn-of-month, range compression, and the
+# overnight/weekly levels that extend the only two families whose gross
+# expectancy was not negative.
+
+ETH_WINDOWS = {
+    "asia": (18 * 60, 24 * 60),
+    "europe": (0, 3 * 60),
+    "london": (3 * 60, 9 * 60 + 30),
+    "all_eth": (-1, -1),      # any bar outside RTH
+}
+
+
+def _eth_tradeable(f, window: str) -> np.ndarray:
+    ok = ~f.is_rth & ~np.isnan(f.atr) & (f.atr > 0)
+    if window == "all_eth":
+        return ok
+    lo, hi = ETH_WINDOWS[window]
+    return ok & (f.et_minute >= lo) & (f.et_minute < hi)
+
+
+def eth_momentum(f, *, eth_window, lookback, threshold_atr, side, **_):
+    r = f.ret[lookback]
+    ok = _eth_tradeable(f, eth_window) & ~np.isnan(r)
+    thr = threshold_atr * f.atr
+    return _emit(ok & (r > thr), ok & (r < -thr), side)
+
+
+def eth_reversion(f, *, eth_window, lookback, threshold_atr, side, **_):
+    r = f.ret[lookback]
+    ok = _eth_tradeable(f, eth_window) & ~np.isnan(r)
+    thr = threshold_atr * f.atr
+    return _emit(ok & (r < -thr), ok & (r > thr), side)
+
+
+def eth_range_breakout(f, *, eth_window, lookback, side, **_):
+    hi, lo = f.range_hi[lookback], f.range_lo[lookback]
+    ok = _eth_tradeable(f, eth_window) & ~np.isnan(hi)
+    return _emit(ok & (f.close > hi), ok & (f.close < lo), side)
+
+
+def gap_trade(f, *, min_gap_atr, mode, entry_from, entry_to, side, **_):
+    """Overnight gap: fade it back toward the prior close, or follow it.
+
+    ``mode='fade'`` buys a gap down and sells a gap up; ``mode='follow'`` does
+    the opposite. Both are documented in the literature, with the sign of the
+    effect depending on gap size, which is why min_gap_atr is a grid axis.
+    """
+    ok = _tradeable(f, entry_from, entry_to) & ~np.isnan(f.session_gap)
+    thr = min_gap_atr * f.atr
+    gap_up = ok & (f.session_gap > thr)
+    gap_dn = ok & (f.session_gap < -thr)
+    if mode == "fade":
+        return _emit(gap_dn, gap_up, side)
+    return _emit(gap_up, gap_dn, side)
+
+
+def turn_of_month(f, *, window_days, entry_from, entry_to, side, **_):
+    """Long into the turn of the month, one of the more durable calendar
+    effects in equity indices. Counted in trading days, not dates."""
+    ok = _tradeable(f, entry_from, entry_to)
+    near_end = f.days_to_month_end <= window_days
+    near_start = f.trading_day_of_month <= window_days
+    inside = ok & (near_end | near_start)
+    return _emit(inside, ok & ~(near_end | near_start), side)
+
+
+def day_of_week(f, *, weekday, entry_from, entry_to, side, **_):
+    ok = _tradeable(f, entry_from, entry_to) & (f.day_of_week == weekday)
+    return _emit(ok, ok, side if side != "both" else "long")
+
+
+def compression_breakout(f, *, lookback, max_compression, side, entry_from, entry_to, **_):
+    """Break out of a range that has gone quiet relative to its own history."""
+    comp = f.compression[lookback]
+    hi, lo = f.range_hi[lookback], f.range_lo[lookback]
+    ok = (
+        _tradeable(f, entry_from, entry_to)
+        & ~np.isnan(comp) & ~np.isnan(hi)
+        & (comp <= max_compression)
+    )
+    return _emit(ok & (f.close > hi), ok & (f.close < lo), side)
+
+
+def overnight_level_break(f, *, entry_from, entry_to, side, **_):
+    """Break of the overnight range, published the moment RTH opens.
+
+    Extends prior_day_break and orb -- the only two first-round families whose
+    gross expectancy was not negative.
+    """
+    ok = _tradeable(f, entry_from, entry_to) & ~np.isnan(f.overnight_high)
+    return _emit(ok & (f.close > f.overnight_high), ok & (f.close < f.overnight_low), side)
+
+
+FAMILIES.update({
+    "eth_momentum": eth_momentum,
+    "eth_reversion": eth_reversion,
+    "eth_range_breakout": eth_range_breakout,
+    "gap_trade": gap_trade,
+    "turn_of_month": turn_of_month,
+    "day_of_week": day_of_week,
+    "compression_breakout": compression_breakout,
+    "overnight_level_break": overnight_level_break,
+})
+
+
+# ---------------------------------------------------------------------------
+# The one-line rival
+# ---------------------------------------------------------------------------
+#
+# Registered after the confidence diagnostic, and it is a control rather than a
+# hope. Sorting the model by its own confidence selects bars that are 90% long
+# and sit at a median ATR of 5.6 against 7.4 for the sample -- so the question
+# is whether seventeen features, a monthly refit and a purged walk-forward beat
+# "be long when the market is calm".
+#
+# Measured over the same bars with no execution model: at h=60 the model's
+# confident set earns $52.28 a trade, always-long on those same bars earns
+# $40.84, and this rule earns $36.08 at the same t-statistic. That is the
+# comparison this family puts through the real backtester -- non-overlapping
+# entries, a stop, flat by the close -- where it can be judged against +0.185R
+# like everything else.
+#
+# The threshold is a fixed ratio to the ATR's own trailing average, not a
+# sample quantile. A quantile of the whole sample would need the whole sample.
+
+
+def low_vol_long(f, *, max_rel_atr, entry_from, entry_to, side, **_):
+    """Take a position whenever ATR sits below its own trailing average."""
+    trailing = pd.Series(f.atr).rolling(1440, min_periods=200).mean().to_numpy()
+    rel = np.divide(f.atr, trailing, out=np.full(f.atr.shape, np.nan),
+                    where=np.isfinite(trailing) & (trailing > 0))
+    ok = _tradeable(f, entry_from, entry_to) & np.isfinite(rel) & (rel <= max_rel_atr)
+    return _emit(ok, ok, side if side != "both" else "long")
+
+
+FAMILIES["low_vol_long"] = low_vol_long

@@ -173,3 +173,41 @@ def test_lucid_has_no_activation_or_monthly_fee():
     assert LUCID.upfront_cost == LUCID.eval_fee
     assert _monthly_fees(LUCID, days_used=500, days_per_month=21) == 0.0
     assert LUCID.upfront_cost < APEX.upfront_cost
+
+
+def test_payout_days_land_inside_the_account_life():
+    """Every payout is dated, and the dates are ordered and in range.
+
+    Needed to attribute fees and withdrawals to calendar years when accounts are
+    bought and blown in a chain rather than studied one at a time.
+    """
+    import numpy as np
+
+    from rules.ruleset import get_ruleset
+    from sim.account import simulate_lifecycle
+
+    rs = get_ruleset("lucid_50k_flex")
+    # A steady climb: passes the eval, then earns payout after payout.
+    days = np.repeat(np.arange(400), 4).astype(np.int64)
+    equity = rs.starting_balance + np.linspace(0, 24_000, days.size)
+    res = simulate_lifecycle(equity, days, equity, days, rs)
+
+    assert res.passed_eval
+    assert len(res.payout_days) == len(res.payouts)
+    assert res.payout_days == sorted(res.payout_days)
+    assert all(0 <= d < res.days_used for d in res.payout_days)
+    # The eval has to finish before any payout can land.
+    assert min(res.payout_days) > res.eval_result.stop_day
+
+
+def test_no_payouts_means_no_payout_days():
+    import numpy as np
+
+    from rules.ruleset import get_ruleset
+    from sim.account import simulate_lifecycle
+
+    rs = get_ruleset("lucid_50k_flex")
+    days = np.repeat(np.arange(60), 4).astype(np.int64)
+    flat = np.full(days.size, rs.starting_balance)
+    res = simulate_lifecycle(flat, days, flat, days, rs)
+    assert res.payouts == [] and res.payout_days == []

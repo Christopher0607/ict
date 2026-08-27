@@ -1,0 +1,130 @@
+//@version=6
+// =============================================================================
+// S : Late-session opening-range breakout with a time exit
+// =============================================================================
+// NQ, 1-minute chart, long only. This is the configuration named
+//   orb[entry_from=300,entry_to=390,or_minutes=30,side=long]stop=8.0R=2.0t=60
+// in research/search/registry.py.
+//
+// Rule in one line: after 14:30 ET, if price is above the 09:30-10:00 opening
+// range high, go long. Exit on a stop 8 ATR below entry, a target 16 ATR above
+// it, after 60 bars, or at the close -- whichever comes first.
+//
+// READ THIS BEFORE TRADING IT.
+//   Development window 2016-01 to 2024-08: +0.0644 R per trade, 54.4% win rate,
+//   235 trades/year, t = +4.30 against a 4.03 noise ceiling for 17,820 configs.
+//
+//   SEALED HOLDOUT 2024-08 to 2026-08: -0.0508 R per trade, 46.5% win rate,
+//   t = -1.71, 473 trades, -$3,608 at $150 risk per trade, 7 of 25 months
+//   profitable. The bootstrap CI does not contain the development estimate.
+//   The edge did not survive out of sample.
+//
+//   Why: RTH intraday drift in NQ fell from +2.72 points/day in the
+//   development window to +0.09 points/day in the holdout, while the index
+//   itself rose FASTER (+21.4%/yr vs +18.5%/yr). The gains moved overnight.
+//   This strategy was harvesting intraday drift, not reading a signal.
+//
+// It is published here for forward testing, not as a recommendation.
+//
+// Matching the research backtester, deliberately:
+//   * a signal on bar t enters at bar t+1 open (Pine's default fill)
+//   * ATR is read on the SIGNAL bar, so stop distance is known before entry
+//   * barriers are live for bars 0..59 of the hold; bar 60 is a market exit
+//   * flat by the close, always
+//   * at most 3 non-overlapping entries per session
+// =============================================================================
+
+strategy("S ORB Late Session + Time Exit", overlay = true, default_qty_type = strategy.fixed, default_qty_value = 1, initial_capital = 50000, commission_type = strategy.commission.cash_per_order, commission_value = 2.0, slippage = 1, calc_on_every_tick = false, process_orders_on_close = false)
+
+// --- Strategy rules ---------------------------------------------------------
+gR = "Strategy rules"
+orMinutes    = input.int(30,    "Opening range length (minutes)",      group = gR, minval = 1)
+entryFrom    = input.int(300,   "Entry window start (Nth RTH minute)", group = gR)
+entryTo      = input.int(390,   "Entry window end (exclusive)",        group = gR)
+atrLen       = input.int(14,    "ATR length",                          group = gR, minval = 1)
+stopAtr      = input.float(8.0, "Stop = N x ATR",                      group = gR)
+targetR      = input.float(2.0, "Target = N x stop",                   group = gR)
+timeExitBars = input.int(60,    "Time exit: hold N bars",              group = gR, minval = 1)
+maxEntries   = input.int(3,     "Max entries per session",             group = gR, minval = 1)
+sessSpec     = input.session("0930-1600", "Regular session",           group = gR)
+tzName       = input.string("America/New_York", "Timezone",            group = gR)
+
+// --- Position sizing --------------------------------------------------------
+gS = "Sizing"
+useRisk    = input.bool(true,   "Size by fixed risk (else 1 contract)", group = gS)
+riskUsd    = input.float(150.0, "Risk per trade (USD)",                 group = gS)
+pointValue = input.float(20.0,  "USD per point (NQ = 20, MNQ = 2)",     group = gS)
+
+// --- Session and RTH bar counter --------------------------------------------
+inRth = not na(time(timeframe.period, sessSpec, tzName))
+sessionStart = inRth and not inRth[1]
+
+var int   rthBar       = -1
+var float orRunHigh    = na
+var float orHigh       = na
+var int   entriesToday = 0
+
+if sessionStart
+    rthBar := 0
+    orRunHigh := high
+    orHigh := na
+    entriesToday := 0
+else if inRth
+    rthBar := rthBar + 1
+    if rthBar < orMinutes
+        orRunHigh := math.max(nz(orRunHigh, high), high)
+    // An opening range is not knowable while it is still forming. Trading the
+    // 30-minute range at minute 5 is reading the future.
+    orHigh := rthBar >= orMinutes ? orRunHigh : na
+else
+    rthBar := -1
+
+// True range against the previous close, then a simple average. Read on the
+// signal bar, so the stop distance is fixed before the entry fills.
+atr = ta.sma(ta.tr(true), atrLen)
+
+inWindow  = inRth and rthBar >= entryFrom and rthBar < entryTo
+haveAtr   = not na(atr) and atr > 0
+tradeable = inWindow and haveAtr and not na(orHigh)
+longSignal = tradeable and close > orHigh
+
+// --- Entry ------------------------------------------------------------------
+var float atrAtEntry = na
+var int   entryBar   = na
+
+flat = strategy.position_size == 0
+
+qty = 1.0
+if useRisk
+    riskPerContract = stopAtr * atr * pointValue
+    qty := riskPerContract > 0 ? math.max(1.0, math.floor(riskUsd / riskPerContract)) : 1.0
+
+// No entry on the window's last bar: it would fill after the session ends, so
+// the trade would not belong to the session that produced the signal.
+canEnter = longSignal and flat and entriesToday < maxEntries and rthBar < entryTo - 1
+if canEnter
+    atrAtEntry := atr
+    strategy.entry("L", strategy.long, qty = qty)
+
+if strategy.position_size > 0 and flat[1]
+    entryBar := bar_index
+    entriesToday := entriesToday + 1
+
+// --- Exits ------------------------------------------------------------------
+// Stop and target are live on bars 0..N-1 of the hold; bar N is a market exit.
+// strategy.close fills at the next bar's open, so it fires one bar early.
+if strategy.position_size > 0 and not na(atrAtEntry)
+    stopPx = strategy.position_avg_price - stopAtr * atrAtEntry
+    tgtPx = strategy.position_avg_price + stopAtr * targetR * atrAtEntry
+    strategy.exit("Stop/Target", from_entry = "L", stop = stopPx, limit = tgtPx)
+
+    barsHeld = bar_index - nz(entryBar, bar_index)
+    timesUp = barsHeld >= timeExitBars - 1
+    closingUp = not inRth or rthBar >= entryTo - 2
+    if timesUp or closingUp
+        strategy.close("L", comment = timesUp ? "time exit" : "session close")
+
+// --- Plots ------------------------------------------------------------------
+plotHigh = inRth and not na(orHigh) ? orHigh : na
+plot(plotHigh, "Opening range high", color = color.new(color.orange, 0), style = plot.style_linebr, linewidth = 2)
+bgcolor(tradeable ? color.new(color.teal, 92) : na, title = "Entry window")

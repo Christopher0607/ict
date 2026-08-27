@@ -53,6 +53,18 @@ class FeatureSet:
     or_high: dict[int, np.ndarray]   # opening-range high, NaN until it is set
     or_low: dict[int, np.ndarray]
 
+    # Second-round features. All causal: the overnight range is only published
+    # once the RTH open has passed it, calendar fields are known in advance,
+    # and compression looks strictly backwards.
+    overnight_high: np.ndarray
+    overnight_low: np.ndarray
+    session_gap: np.ndarray          # this session's open minus last close
+    day_of_week: np.ndarray
+    day_of_month: np.ndarray
+    trading_day_of_month: np.ndarray  # 1-based; turn-of-month effects need this
+    days_to_month_end: np.ndarray
+    compression: dict[int, np.ndarray]  # N-bar range / trailing average range
+
     def __len__(self) -> int:
         return self.close.size
 
@@ -109,7 +121,15 @@ def build(
         oh, ol = _opening_range(h, l, session_id, minutes_into_rth, m)
         or_high[m], or_low[m] = oh, ol
 
+    on_hi, on_lo = _overnight_range(h, l, session_id, is_rth)
+    gap = _session_gap_arr(o, c, session_id)
+    dow, dom, tdom, dtme = _calendar(d, session_id)
+    compression = {n: _compression(h, l, n) for n in lookbacks}
+
     return FeatureSet(
+        overnight_high=on_hi, overnight_low=on_lo, session_gap=gap,
+        day_of_week=dow, day_of_month=dom, trading_day_of_month=tdom,
+        days_to_month_end=dtme, compression=compression,
         ts=d["ts_open"].to_numpy(), open=o, high=h, low=l, close=c, volume=v,
         session_id=session_id, session_end_idx=session_end_idx,
         minutes_into_rth=minutes_into_rth, is_rth=is_rth, et_minute=et_minute,
@@ -192,3 +212,61 @@ def _opening_range(h, l, session_id, minutes_into_rth, window):
     hi[not_yet] = np.nan
     lo[not_yet] = np.nan
     return hi, lo
+
+
+def _overnight_range(h, l, session_id, is_rth):
+    """High and low of the pre-RTH portion of each session.
+
+    NaN until RTH begins: the overnight range is not a level you can trade
+    against while it is still forming.
+    """
+    df = pd.DataFrame({"h": h, "l": l, "s": session_id, "rth": is_rth})
+    pre = df.loc[~df["rth"]]
+    agg = pre.groupby("s").agg(hi=("h", "max"), lo=("l", "min"))
+    hi = pd.Series(session_id).map(agg["hi"].to_dict()).to_numpy(float, copy=True)
+    lo = pd.Series(session_id).map(agg["lo"].to_dict()).to_numpy(float, copy=True)
+    hi[~is_rth] = np.nan
+    lo[~is_rth] = np.nan
+    return hi, lo
+
+
+def _session_gap_arr(o, c, session_id):
+    """This session's first price minus the previous session's last."""
+    df = pd.DataFrame({"o": o, "c": c, "s": session_id})
+    first_open = df.groupby("s")["o"].transform("first").to_numpy()
+    prev_close = df.groupby("s")["c"].last().shift(1)
+    mapped = pd.Series(session_id).map(prev_close.to_dict()).to_numpy(float)
+    return first_open - mapped
+
+
+def _calendar(d: pd.DataFrame, session_id: np.ndarray):
+    """Calendar position, counted in trading days rather than dates.
+
+    Turn-of-month effects are defined on trading days: the last trading day of
+    a month is the tradeable one, whatever date it falls on.
+    """
+    sess = pd.Series(d["session_date"].to_numpy())
+    ts = pd.to_datetime(sess)
+    dow = ts.dt.dayofweek.to_numpy(float)
+    dom = ts.dt.day.to_numpy(float)
+
+    uniq = pd.Series(pd.to_datetime(pd.unique(sess))).sort_values()
+    ym = uniq.dt.year * 12 + uniq.dt.month
+    tdom_map = dict(zip(uniq, uniq.groupby(ym).cumcount() + 1))
+    total = ym.map(ym.value_counts())
+    dtme_map = dict(zip(uniq, total.to_numpy() - (uniq.groupby(ym).cumcount() + 1)))
+
+    tdom = ts.map(tdom_map).to_numpy(float)
+    dtme = ts.map(dtme_map).to_numpy(float)
+    return dow, dom, tdom, dtme
+
+
+def _compression(h, l, n):
+    """This bar's N-bar range against its own trailing average.
+
+    Below 1 means the market has gone quiet relative to itself, which is the
+    setup half of every range-expansion idea.
+    """
+    rng = pd.Series(h).rolling(n, min_periods=n).max() - pd.Series(l).rolling(n, min_periods=n).min()
+    baseline = rng.shift(1).rolling(n * 5, min_periods=n * 2).mean()
+    return (rng / baseline).to_numpy()

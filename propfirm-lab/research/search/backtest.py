@@ -32,7 +32,13 @@ import numpy as np
 TICK_SIZE = 0.25
 POINT_VALUE = 20.0
 COMMISSION_RT = 4.00
+
+# Slippage is regime-dependent because liquidity is. Median 1-minute volume is
+# 707 contracts inside RTH and 57 outside it -- twelve times thinner -- so
+# assuming the same one tick everywhere quietly flatters every overnight
+# result. Two ticks outside RTH is still not generous; it is merely not absurd.
 STOP_SLIPPAGE_TICKS = 1.0
+STOP_SLIPPAGE_TICKS_ETH = 2.0
 
 
 @dataclass
@@ -50,12 +56,31 @@ class TradeResult:
     hit_target: np.ndarray
     r_multiple: np.ndarray
     net_pnl: np.ndarray
+    risk_dollars: np.ndarray
     mae_points: np.ndarray
     mfe_points: np.ndarray
     ambiguous: np.ndarray
 
     def __len__(self) -> int:
         return self.entry_idx.size
+
+    @property
+    def commission_r(self) -> float:
+        """Mean commission as a fraction of risk, measured from the trades.
+
+        Estimating this from a median ATR is wrong and was wrong here: trades
+        are not spread evenly across volatility states, so the ATR at signal
+        time differs systematically from the ATR of the sample. The error ran
+        to ~0.017R, which is most of the gross expectancy being measured.
+        """
+        if len(self) == 0:
+            return 0.0
+        return float(np.mean(COMMISSION_RT / self.risk_dollars))
+
+    @property
+    def gross_expectancy_r(self) -> float:
+        """Expectancy before commission. Slippage stays in -- it is a real fill."""
+        return self.expectancy_r + self.commission_r
 
     @property
     def expectancy_r(self) -> float:
@@ -86,19 +111,36 @@ def simulate(
     session_end_idx: np.ndarray,
     *,
     horizon: int = 240,
+    time_exit_bars: int | None = None,
+    slippage_ticks: np.ndarray | float = STOP_SLIPPAGE_TICKS,
 ) -> TradeResult:
     """Resolve every bracket at once.
 
     ``signal_idx`` holds bar indices where a signal fired; entry happens at
     ``signal_idx + 1``'s open. ``session_end_idx`` is the last bar index of each
     signal's own session, so positions close there if neither barrier is hit.
+
+    ``time_exit_bars=N`` holds the position for exactly N bars -- barriers are
+    live on bars 0..N-1 -- and flattens at bar N's open if neither was touched.
+    Both limits apply and the earlier one wins, so a trade opened ten minutes
+    before the close still goes flat at the close.
     """
+    if time_exit_bars is not None:
+        if time_exit_bars < 1:
+            raise ValueError("time_exit_bars must be >= 1")
+        if horizon < time_exit_bars:
+            raise ValueError(
+                f"horizon {horizon} is shorter than time_exit_bars {time_exit_bars}; "
+                "the forward window would truncate the hold before the time exit"
+            )
     n_bars = high.size
     entry_idx = signal_idx + 1
     keep = entry_idx < n_bars
     entry_idx, direction = entry_idx[keep], direction[keep]
     stop_points, target_points = stop_points[keep], target_points[keep]
     session_end_idx = session_end_idx[keep]
+    slip = (slippage_ticks[keep] if isinstance(slippage_ticks, np.ndarray)
+            else np.full(entry_idx.shape, float(slippage_ticks)))
 
     if entry_idx.size == 0:
         return _empty()
@@ -115,8 +157,17 @@ def simulate(
     win_lo = np.lib.stride_tricks.sliding_window_view(lo, horizon)[entry_idx]
 
     offsets = np.arange(horizon)[None, :]
-    # Bars past this trade's session end are not tradeable.
-    max_off = np.minimum(session_end_idx - entry_idx, horizon - 1)[:, None]
+    # Two limits on how long a position can live, and the earlier one binds.
+    # `hold_off` is the last bar the barriers are live on; `flat_off` is the bar
+    # whose open we mark out at if neither was touched.
+    session_off = session_end_idx - entry_idx
+    if time_exit_bars is None:
+        hold_off, flat_off = session_off, session_off
+    else:
+        hold_off = np.minimum(session_off, time_exit_bars - 1)
+        flat_off = np.minimum(session_off, time_exit_bars)
+    max_off = np.minimum(hold_off, horizon - 1)[:, None]
+    flat_off = np.minimum(flat_off, horizon)
     valid = (offsets <= max_off) & ~np.isnan(win_hi)
 
     long_mask = (direction == 1)[:, None]
@@ -133,8 +184,8 @@ def simulate(
     resolved = np.minimum(first_stop, first_target)
     timed_out = resolved >= horizon
 
-    # Anything unresolved exits at its session's last bar.
-    exit_off = np.where(timed_out, max_off[:, 0], resolved)
+    # Anything unresolved exits at the earlier of the time exit and the close.
+    exit_off = np.where(timed_out, flat_off, resolved)
     exit_idx = entry_idx + exit_off
 
     ambiguous = (first_stop == first_target) & ~timed_out
@@ -143,7 +194,7 @@ def simulate(
 
     exit_price = np.where(
         hit_stop,
-        stop_price - direction * STOP_SLIPPAGE_TICKS * TICK_SIZE,
+        stop_price - direction * slip * TICK_SIZE,
         np.where(hit_target, target_price, open_[np.minimum(exit_idx, n_bars - 1)]),
     )
 
@@ -159,6 +210,7 @@ def simulate(
     mfe = np.where(direction == 1, excursion_hi - entry_price, entry_price - excursion_lo)
 
     return TradeResult(
+        risk_dollars=risk_dollars,
         entry_idx=entry_idx, exit_idx=exit_idx, direction=direction,
         entry_price=entry_price, exit_price=exit_price,
         stop_price=stop_price, target_price=target_price,
@@ -179,7 +231,7 @@ def _empty() -> TradeResult:
     z = np.array([], dtype=float)
     zi = np.array([], dtype=np.int64)
     zb = np.array([], dtype=bool)
-    return TradeResult(zi, zi, zi, z, z, z, z, zb, zb, z, z, z, z, zb)
+    return TradeResult(zi, zi, zi, z, z, z, z, zb, zb, z, z, z, z, z, zb)
 
 
 # Bounded, non-overlapping entries. Fixed before any result was computed.
@@ -204,11 +256,20 @@ def simulate_sequential(
     target_points: np.ndarray,
     *,
     horizon: int = 240,
+    time_exit_bars: int | None = None,
     max_entries: int = MAX_ENTRIES_PER_SESSION,
 ) -> TradeResult:
-    """Non-overlapping entries, at most ``max_entries`` per session."""
+    """Non-overlapping entries, at most ``max_entries`` per session.
+
+    Slippage is taken from each entry's own session: RTH bars pay one tick,
+    everything else pays two.
+    """
     if signal_idx.size == 0:
         return _empty()
+
+    # The forward window has to be long enough to hold the whole position.
+    if time_exit_bars is not None:
+        horizon = max(horizon, time_exit_bars)
 
     # A signal on a session's last bar would enter on the first bar of the NEXT
     # session, carrying a setup across the overnight break. Drop those: the
@@ -246,12 +307,17 @@ def simulate_sequential(
         if not pick.any():
             break
 
+        picked = signal_idx[pick]
+        slip = np.where(f.is_rth[np.minimum(picked + 1, f.is_rth.size - 1)],
+                        STOP_SLIPPAGE_TICKS, STOP_SLIPPAGE_TICKS_ETH)
         res = simulate(
             f.high, f.low, f.open,
-            signal_idx[pick], direction[pick],
+            picked, direction[pick],
             stop_points[pick], target_points[pick],
-            f.session_end_idx[signal_idx[pick]],
+            f.session_end_idx[picked],
             horizon=horizon,
+            time_exit_bars=time_exit_bars,
+            slippage_ticks=slip,
         )
         rounds.append(res)
         for ent, ex in zip(res.entry_idx, res.exit_idx):
@@ -273,7 +339,8 @@ def _concat(parts: list[TradeResult]) -> TradeResult:
             for field in (
                 "entry_idx", "exit_idx", "direction", "entry_price", "exit_price",
                 "stop_price", "target_price", "hit_stop", "hit_target",
-                "r_multiple", "net_pnl", "mae_points", "mfe_points", "ambiguous",
+                "r_multiple", "net_pnl", "risk_dollars", "mae_points", "mfe_points",
+                "ambiguous",
             )
         }
     )

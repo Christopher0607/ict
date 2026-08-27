@@ -20,3 +20,6 @@ venv/
 research/cache/
 *.dbn
 *.dbn.zst
+
+# Search checkpoints. Intermediate; the merged parquet is the artefact.
+findings/shards/

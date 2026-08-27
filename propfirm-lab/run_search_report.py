@@ -21,6 +21,7 @@ from research.search import registry
 from research.search.backtest import simulate_sequential
 from research.search.features import build
 from research.search.rules import FAMILIES
+from research.search import model_signal  # noqa: F401 -- registers model_confidence
 from research.search.stats import bh_fdr, block_bootstrap_ci, deflated_sharpe
 
 OUT = Path("findings")
@@ -104,6 +105,7 @@ def _deflate(finalists: pd.DataFrame, n_grid: int) -> pd.DataFrame:
         res = simulate_sequential(
             f, sig.idx, sig.direction, cfg.stop_atr * atr,
             cfg.stop_atr * atr * cfg.target_r,
+            time_exit_bars=cfg.time_exit_bars,
         )
         sessions = f.session_id[res.entry_idx]
         d = deflated_sharpe(res.r_multiple, n_grid)
@@ -126,14 +128,84 @@ def _describe(res: pd.DataFrame) -> None:
     print(f"  share with positive expectancy: "
           f"{float((ok['expectancy_r'] > 0).mean()):.1%}")
 
-    print("\n=== by family (median expectancy, after costs) ===")
-    fam = ok.groupby("family").agg(
+    # The noise ceiling: the largest |t| you expect from this many pure-noise
+    # trials. Reported next to the largest |t| actually found, because the
+    # comparison is the whole result.
+    n_grid = registry.grid_size()["TOTAL"]
+    ceiling = float(stats.norm.ppf(1 - 1 / (2 * n_grid)))
+    print(f"\n=== the noise ceiling ===")
+    print(f"  {n_grid:,} trials -> expected largest |t| under the null: {ceiling:.3f}")
+    print(f"  largest t found:  {ok['t_stat'].max():+.3f}  "
+          f"({ok.loc[ok['t_stat'].idxmax(), 'name']})")
+    print(f"  largest |t| found: {ok['t_stat'].abs().max():.3f}")
+
+    # Gross expectancy uses the commission MEASURED from each config's own
+    # trades. findings/04 estimated it from an all-session median ATR while
+    # every family in it traded RTH only, where ATR is roughly twice as large,
+    # and overstated the commission by about 0.017R as a result -- most of the
+    # gross expectancy it was reporting. See findings/05.
+    has_gross = "gross_expectancy_r" in ok.columns and ok["gross_expectancy_r"].notna().any()
+    print("\n=== by family ===")
+    aggs = dict(
         configs=("expectancy_r", "size"),
-        median_r=("expectancy_r", "median"),
-        best_r=("expectancy_r", "max"),
+        median_net=("expectancy_r", "median"),
+        best_net=("expectancy_r", "max"),
+        share_positive=("expectancy_r", lambda s: float((s > 0).mean())),
         median_trades=("trades", "median"),
-    ).sort_values("median_r", ascending=False)
-    print(fam.to_string())
+    )
+    if has_gross:
+        aggs["median_commission"] = ("commission_r", "median")
+        aggs["median_gross"] = ("gross_expectancy_r", "median")
+    fam = ok.groupby("family").agg(**aggs)
+    sort_key = "median_gross" if has_gross else "median_net"
+    fam = fam.sort_values(sort_key, ascending=False)
+    with pd.option_context("display.float_format", lambda v: f"{v:+.4f}"):
+        print(fam.to_string())
+
+    if "time_exit_bars" in ok.columns and ok["time_exit_bars"].notna().any():
+        print("\n=== does a time exit help? (orb / prior_day_break, paired) ===")
+        _time_exit_comparison(ok)
+
+    if (ok["family"] == "model_confidence").any():
+        print("\n=== model_confidence, by confidence quantile ===")
+        m = ok[ok["family"] == "model_confidence"]
+        g = m.groupby(["regime", "quantile"]).agg(
+            configs=("expectancy_r", "size"),
+            median_net=("expectancy_r", "median"),
+            best_net=("expectancy_r", "max"),
+            median_gross=("gross_expectancy_r", "median"),
+            best_t=("t_stat", "max"),
+            median_trades=("trades", "median"),
+        )
+        with pd.option_context("display.float_format", lambda v: f"{v:+.4f}"):
+            print(g.to_string())
+
+
+def _time_exit_comparison(ok: pd.DataFrame) -> None:
+    """Same family, same signal parameters, same stop -- bracket vs time exit.
+
+    Paired, so this is not subject to the max-of-search inflation that governs
+    the headline result. It measures one consistent effect, not the best draw.
+    """
+    fams = list(registry.TIME_EXIT_FAMILIES)
+    sub = ok[ok["family"].isin(fams)]
+    key = ["family", "entry_from", "entry_to", "side", "or_minutes", "stop_atr", "target_r"]
+    key = [k for k in key if k in sub.columns]
+
+    bracket = sub[sub["time_exit_bars"].isna()].set_index(key)["expectancy_r"]
+    bracket = bracket[~bracket.index.duplicated()]
+    for bars in sorted(sub["time_exit_bars"].dropna().unique()):
+        timed = sub[sub["time_exit_bars"] == bars].set_index(key)["expectancy_r"]
+        timed = timed[~timed.index.duplicated()]
+        common = timed.index.intersection(bracket.index)
+        if len(common) < 10:
+            print(f"  {int(bars):>3} bars: only {len(common)} pairs, skipped")
+            continue
+        d = (timed.loc[common] - bracket.loc[common]).to_numpy()
+        t = d.mean() / (d.std(ddof=1) / np.sqrt(d.size)) if d.std(ddof=1) > 0 else 0.0
+        print(f"  {int(bars):>3} bars: {d.size:>4} pairs  "
+              f"mean change {d.mean():+.4f} R  t={t:+.2f}  "
+              f"share improved {float((d > 0).mean()):.0%}")
 
 
 if __name__ == "__main__":
