@@ -378,3 +378,42 @@ def low_vol_long(f, *, max_rel_atr, entry_from, entry_to, side, **_):
 
 
 FAMILIES["low_vol_long"] = low_vol_long
+
+
+# ---------------------------------------------------------------------------
+# The New York open
+# ---------------------------------------------------------------------------
+#
+# Registered for round four, which targets 09:30-10:00 and 09:30-10:30
+# specifically. The window is worth its own families for a measurable reason:
+# median ATR in the first thirty minutes is 8.91 points against 5.75 across the
+# whole session, and since stops are ATR-scaled, commission is a 35% smaller
+# fraction of risk there than anywhere else in the day. That is the only
+# structural advantage this round has, and it is working against a micro
+# contract whose commission per dollar of risk is 1.8-3.4x the full-size one.
+
+
+def opening_drive(f, *, drive_minutes, threshold_atr, entry_from, entry_to, side, **_):
+    """Follow the direction of the first N minutes of the cash session.
+
+    The drive is measured from the session's opening price to the close of bar
+    N-1, and is only knowable from bar N onward -- the same rule the opening
+    range obeys. Below the threshold the session has no drive and nothing fires.
+    """
+    sess = pd.DataFrame({"s": f.session_id, "o": f.open, "c": f.close,
+                         "m": f.minutes_into_rth})
+    first_open = sess.loc[sess["m"] == 0].groupby("s")["o"].first()
+    drive_close = (sess.loc[sess["m"] == drive_minutes - 1]
+                   .groupby("s")["c"].first())
+    drive = (drive_close - first_open).reindex(
+        pd.Index(f.session_id).unique()).to_dict()
+    move = pd.Series(f.session_id).map(drive).to_numpy(float, copy=True)
+    # Not knowable until the drive window has closed.
+    move[f.minutes_into_rth < drive_minutes] = np.nan
+
+    ok = _tradeable(f, entry_from, entry_to) & np.isfinite(move)
+    thr = threshold_atr * f.atr
+    return _emit(ok & (move > thr), ok & (move < -thr), side)
+
+
+FAMILIES["opening_drive"] = opening_drive

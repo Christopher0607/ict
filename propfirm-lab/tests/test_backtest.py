@@ -467,3 +467,104 @@ def test_sequential_respects_the_time_exit_and_reuses_the_slot():
     assert len(r) == 2
     assert list(r.entry_idx) == [1, 5]
     assert list(r.exit_idx) == [3, 7]
+
+
+# ---------------------------------------------------------------------------
+# Contract specification: NQ against its micro
+# ---------------------------------------------------------------------------
+#
+# The micro is the same index at a tenth the multiplier, so the interesting
+# question is not whether it is cheaper -- it is what happens per dollar of
+# risk, where commission does not scale with point value and slippage does.
+
+
+def _run_inst(inst, stop=50.0, o=None, h=None, l=None):
+    from research.search.backtest import simulate
+    o = o or [100, 100, 100, 100]
+    h = h or [100, 101, 101, 101]
+    l = l or [100, 99, 99, 99]
+    oo, hh, ll = _bars(o, h, l)
+    return simulate(
+        hh, ll, oo, np.array([0]), np.array([1]),
+        np.array([stop]), np.array([stop]),
+        np.array([len(o) - 1]), horizon=4, instrument=inst,
+    )
+
+
+def test_micro_costs_more_commission_per_unit_of_risk():
+    """Point value falls tenfold, commission falls under fourfold. The micro is
+    two to three times dearer per dollar risked, which is the fact this whole
+    round turns on."""
+    from research.search.backtest import MNQ, NQ
+
+    nq, mnq = _run_inst(NQ), _run_inst(MNQ)
+    assert nq.risk_dollars[0] == pytest.approx(50 * 20)
+    assert mnq.risk_dollars[0] == pytest.approx(50 * 2)
+    assert nq.commission_r == pytest.approx(4.00 / (50 * 20))
+    assert mnq.commission_r == pytest.approx(1.04 / (50 * 2))
+    assert mnq.commission_r / nq.commission_r == pytest.approx(2.6, rel=1e-6)
+
+
+def test_slippage_costs_the_same_R_on_either_contract():
+    """Point value appears in both the fill and the risk, so it cancels."""
+    from research.search.backtest import MNQ, NQ
+
+    # A stop-out: bar 2 trades through the stop at 50 points.
+    o, h, l = [100, 100, 100, 100], [100, 101, 101, 101], [100, 99, 40, 99]
+    nq = _run_inst(NQ, o=o, h=h, l=l)
+    mnq = _run_inst(MNQ, o=o, h=h, l=l)
+    assert nq.hit_stop[0] and mnq.hit_stop[0]
+
+    # Gross expectancy keeps slippage and removes commission, so if slippage
+    # costs the same R on both, the two gross figures must agree exactly.
+    assert nq.gross_expectancy_r == pytest.approx(mnq.gross_expectancy_r)
+    # ...while the net figures differ by exactly the commission gap.
+    gap = mnq.commission_r - nq.commission_r
+    assert nq.expectancy_r - mnq.expectancy_r == pytest.approx(gap)
+
+
+def test_commission_tiers_move_expectancy_the_predicted_amount():
+    from research.search.backtest import MNQ_CHEAP, MNQ_DEAR
+
+    cheap, dear = _run_inst(MNQ_CHEAP), _run_inst(MNQ_DEAR)
+    assert cheap.expectancy_r > dear.expectancy_r
+    assert cheap.expectancy_r - dear.expectancy_r == pytest.approx(
+        (1.34 - 0.74) / (50 * 2)
+    )
+
+
+def test_nq_stays_the_default():
+    """Every published figure was computed on NQ. The default must not move."""
+    from research.search.backtest import COMMISSION_RT, NQ, POINT_VALUE, TICK_SIZE
+
+    assert (TICK_SIZE, POINT_VALUE, COMMISSION_RT) == (0.25, 20.0, 4.00)
+    r = _run_inst(NQ)
+    assert r.instrument.name == "NQ"
+    # Same call without naming an instrument.
+    default = _run(o=[100, 100, 100, 100], h=[100, 101, 101, 101],
+                   l=[100, 99, 99, 99], sig=[0], direction=[1],
+                   stop=[50.0], target=[50.0], horizon=4)
+    assert default.expectancy_r == pytest.approx(r.expectancy_r)
+
+
+def test_sequential_carries_the_instrument_through():
+    from research.search.backtest import MNQ, simulate_sequential
+
+    n = 12
+    f = _F([100] * n, [101] * n, [99] * n, [0] * n)
+    r = simulate_sequential(
+        f, np.array([0, 4], np.int64), np.array([1, 1], np.int64),
+        np.full(2, 50.0), np.full(2, 50.0), time_exit_bars=2, instrument=MNQ,
+    )
+    assert r.instrument.name == "MNQ"
+    assert r.commission_r == pytest.approx(1.04 / (50 * 2))
+
+
+def test_empty_result_keeps_its_instrument():
+    from research.search.backtest import MNQ, simulate_sequential
+
+    f = _F([100] * 5, [101] * 5, [99] * 5, [0] * 5)
+    r = simulate_sequential(f, np.array([], np.int64), np.array([], np.int64),
+                            np.array([]), np.array([]), instrument=MNQ)
+    assert len(r) == 0 and r.instrument.name == "MNQ"
+    assert r.commission_r == 0.0

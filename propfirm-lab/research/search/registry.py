@@ -233,6 +233,76 @@ LOW_VOL_TARGETS = (2.0, NO_TARGET_R)
 LOW_VOL_BARS = (60, 120)
 
 
+# ---------------------------------------------------------------------------
+# Round 4: the New York open, on a micro contract, for win rate
+# ---------------------------------------------------------------------------
+#
+# Committed before it runs. The request was "1:1 on MNQ, 09:30-10:00 or 10:30";
+# the account owner then chose to search any payoff ratio and filter for win
+# rate above 50% at report time, which is what "1:1" was actually for. Every
+# configuration below counts as a trial whether or not it passes that filter.
+#
+# What is genuinely new here, against 17,820 already spent:
+#
+#   * The (0, 30) window -- 09:30-10:00 -- has never been tested. The grid's
+#     shortest window was the opening hour.
+#   * 5- and 10-minute opening ranges. A 30-minute entry window cannot trade a
+#     30-minute opening range at all, so or_minutes=(15,30,60) leaves the short
+#     window with nothing to break out of.
+#   * A 0.75 target, below 1:1, which trades expectancy for win rate harder
+#     than anything in the grid so far.
+#   * `opening_drive`, the one family here that did not already exist.
+#
+# What is already known and is not a reason to expect much: strict 1:1 is the
+# worst target multiple in the grid (6.9% of 4,056 configurations positive,
+# against 18.1% at 1:3), and the best 1:1 configuration in the opening hour
+# reaches +0.0467 R against a +0.185 R bar. The opening session's larger ATR
+# cuts commission as a share of risk by 35%, and MNQ raises it by 80-240%.
+
+OPEN_WINDOWS = ((0, 30), (0, 60))          # 09:30-10:00 and 09:30-10:30 ET
+OPEN_TARGETS = (0.75, 1.0, 1.5, 2.0)       # weighted toward win rate
+OPEN_STOPS = STOP_ATR_MULTS                # 1.0 / 1.5 / 2.5 / 4.0
+
+OPEN_GRID: dict[str, dict[str, tuple]] = {
+    "orb": {"or_minutes": (5, 10, 15)},
+    "opening_drive": {"drive_minutes": (5, 10), "threshold_atr": (0.5, 1.0)},
+    "momentum": {"lookback": (5, 15), "threshold_atr": (0.5, 1.0)},
+    "mean_reversion": {"lookback": (5, 15), "threshold_atr": (0.5, 1.0)},
+    "range_breakout": {"lookback": (5, 15, 30)},
+    "gap_trade": {"min_gap_atr": (0.5, 1.0), "mode": ("fade", "follow")},
+    "vwap_reversion": {"threshold_atr": (0.5, 1.0, 2.0)},
+    "prior_day_break": {},
+}
+
+
+def _open_configs(existing: set[str] | None = None) -> list[Config]:
+    """The opening-session block, minus anything the grid already contains.
+
+    The 09:30-10:30 window and targets 1.0/1.5/2.0 were already searched for
+    most of these families, so 720 of these combinations are re-runs. They were
+    counted as trials the first time and must not be counted again -- an
+    inflated `n` would move the noise ceiling for a search that never happened.
+    """
+    out: list[Config] = []
+    for family, axes in OPEN_GRID.items():
+        keys = sorted(axes)
+        combos = list(itertools.product(*(axes[k] for k in keys))) or [()]
+        for combo in combos:
+            base = dict(zip(keys, combo))
+            for lo, hi in OPEN_WINDOWS:
+                params = dict(base)
+                params["entry_from"], params["entry_to"] = lo, hi
+                for side in SIDES:
+                    params["side"] = side
+                    for stop_atr in OPEN_STOPS:
+                        for target_r in OPEN_TARGETS:
+                            cfg = Config(family, dict(params), stop_atr, target_r)
+                            if existing is not None and cfg.name in existing:
+                                continue
+                            out.append(cfg)
+    return out
+
+
 def _low_vol_configs() -> list[Config]:
     out: list[Config] = []
     keys = sorted(LOW_VOL_GRID)
@@ -277,14 +347,20 @@ def _time_exit_configs() -> list[Config]:
     return out
 
 
-def enumerate_configs() -> list[Config]:
-    """Every configuration in the grid, in a deterministic order."""
+def _family_all() -> list[Config]:
     out: list[Config] = []
     for family, axes in GRID.items():
         out.extend(_family_configs(family, axes))
+    return out
+
+
+def enumerate_configs() -> list[Config]:
+    """Every configuration in the grid, in a deterministic order."""
+    out: list[Config] = _family_all()
     out.extend(_model_configs())
     out.extend(_time_exit_configs())
     out.extend(_low_vol_configs())
+    out.extend(_open_configs({c.name for c in out}))
     return out
 
 
@@ -318,6 +394,12 @@ def grid_size() -> dict[str, int]:
     for values in LOW_VOL_GRID.values():
         n_lv *= len(values)
     counts["low_vol_long"] = n_lv
+
+    # Counted from the deduped enumeration rather than analytically, because
+    # the overlap with the existing grid is not a closed form.
+    prior = _family_all() + _model_configs() + _time_exit_configs() + _low_vol_configs()
+    for cfg in _open_configs({c.name for c in prior}):
+        counts[f"{cfg.family}@open"] = counts.get(f"{cfg.family}@open", 0) + 1
 
     counts["TOTAL"] = sum(v for k, v in counts.items() if k != "TOTAL")
     return counts

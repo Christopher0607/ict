@@ -27,11 +27,53 @@ from dataclasses import dataclass
 
 import numpy as np
 
-# NQ: $20 per point, $4.00 commission per round turn, 1 tick (0.25pt) of
-# slippage on stop exits. Matches ict_lab/configs/strategy_config.py.
-TICK_SIZE = 0.25
-POINT_VALUE = 20.0
-COMMISSION_RT = 4.00
+@dataclass(frozen=True)
+class Instrument:
+    """Contract specification. What changes between NQ and its micro.
+
+    The two are the same index at a tenth the multiplier, so a backtest on NQ
+    prices is a backtest on MNQ -- only the contract spec differs, and no new
+    data is needed.
+
+    The asymmetry that matters: **commission does not scale with point value.**
+    NQ is $20 a point at ~$4.00 round turn; MNQ is $2 a point at ~$1.04. Per
+    dollar of risk that makes the micro two to three times more expensive:
+
+        commission_r = commission_rt / (stop_points * point_value)
+        NQ  : 4.00 / (stop * 20) = 0.20 / stop
+        MNQ : 1.04 / (stop *  2) = 0.52 / stop
+
+    Slippage is the opposite -- point value cancels, so it costs the same R on
+    either contract:
+
+        slippage_r = slip_ticks * tick_size / stop_points
+
+    So the micro's advantage is granularity, not cost. $71 of risk per trade
+    against a $2,000 drawdown is tradeable where $713 is not; it is simply
+    tradeable at a worse per-trade expectancy.
+    """
+
+    name: str
+    tick_size: float
+    point_value: float
+    commission_rt: float
+
+
+# Matches ict_lab/configs/strategy_config.py.
+NQ = Instrument("NQ", 0.25, 20.0, 4.00)
+
+# Micro. Commission varies by broker over roughly $0.74-$1.34 round turn, which
+# moves commission_r by a factor of 1.8, so the search reports all three rather
+# than picking one.
+MNQ = Instrument("MNQ", 0.25, 2.0, 1.04)
+MNQ_CHEAP = Instrument("MNQ", 0.25, 2.0, 0.74)
+MNQ_DEAR = Instrument("MNQ", 0.25, 2.0, 1.34)
+
+# Module-level aliases, kept so existing callers and every published figure
+# stay on NQ unchanged.
+TICK_SIZE = NQ.tick_size
+POINT_VALUE = NQ.point_value
+COMMISSION_RT = NQ.commission_rt
 
 # Slippage is regime-dependent because liquidity is. Median 1-minute volume is
 # 707 contracts inside RTH and 57 outside it -- twelve times thinner -- so
@@ -60,6 +102,7 @@ class TradeResult:
     mae_points: np.ndarray
     mfe_points: np.ndarray
     ambiguous: np.ndarray
+    instrument: Instrument = NQ
 
     def __len__(self) -> int:
         return self.entry_idx.size
@@ -75,7 +118,7 @@ class TradeResult:
         """
         if len(self) == 0:
             return 0.0
-        return float(np.mean(COMMISSION_RT / self.risk_dollars))
+        return float(np.mean(self.instrument.commission_rt / self.risk_dollars))
 
     @property
     def gross_expectancy_r(self) -> float:
@@ -113,6 +156,7 @@ def simulate(
     horizon: int = 240,
     time_exit_bars: int | None = None,
     slippage_ticks: np.ndarray | float = STOP_SLIPPAGE_TICKS,
+    instrument: Instrument = NQ,
 ) -> TradeResult:
     """Resolve every bracket at once.
 
@@ -143,7 +187,7 @@ def simulate(
             else np.full(entry_idx.shape, float(slippage_ticks)))
 
     if entry_idx.size == 0:
-        return _empty()
+        return _empty(instrument)
 
     entry_price = open_[entry_idx]
     stop_price = entry_price - direction * stop_points
@@ -194,13 +238,13 @@ def simulate(
 
     exit_price = np.where(
         hit_stop,
-        stop_price - direction * slip * TICK_SIZE,
+        stop_price - direction * slip * instrument.tick_size,
         np.where(hit_target, target_price, open_[np.minimum(exit_idx, n_bars - 1)]),
     )
 
-    gross = direction * (exit_price - entry_price) * POINT_VALUE
-    net = gross - COMMISSION_RT
-    risk_dollars = stop_points * POINT_VALUE
+    gross = direction * (exit_price - entry_price) * instrument.point_value
+    net = gross - instrument.commission_rt
+    risk_dollars = stop_points * instrument.point_value
     r_multiple = np.divide(net, risk_dollars, out=np.zeros_like(net),
                            where=risk_dollars > 0)
 
@@ -210,6 +254,7 @@ def simulate(
     mfe = np.where(direction == 1, excursion_hi - entry_price, entry_price - excursion_lo)
 
     return TradeResult(
+        instrument=instrument,
         risk_dollars=risk_dollars,
         entry_idx=entry_idx, exit_idx=exit_idx, direction=direction,
         entry_price=entry_price, exit_price=exit_price,
@@ -227,11 +272,11 @@ def _first_true_offset(mask: np.ndarray, horizon: int) -> np.ndarray:
     return np.where(any_true, mask.argmax(axis=1), horizon)
 
 
-def _empty() -> TradeResult:
+def _empty(instrument: Instrument = NQ) -> TradeResult:
     z = np.array([], dtype=float)
     zi = np.array([], dtype=np.int64)
     zb = np.array([], dtype=bool)
-    return TradeResult(zi, zi, zi, z, z, z, z, zb, zb, z, z, z, z, z, zb)
+    return TradeResult(zi, zi, zi, z, z, z, z, zb, zb, z, z, z, z, z, zb, instrument)
 
 
 # Bounded, non-overlapping entries. Fixed before any result was computed.
@@ -258,6 +303,7 @@ def simulate_sequential(
     horizon: int = 240,
     time_exit_bars: int | None = None,
     max_entries: int = MAX_ENTRIES_PER_SESSION,
+    instrument: Instrument = NQ,
 ) -> TradeResult:
     """Non-overlapping entries, at most ``max_entries`` per session.
 
@@ -265,7 +311,7 @@ def simulate_sequential(
     everything else pays two.
     """
     if signal_idx.size == 0:
-        return _empty()
+        return _empty(instrument)
 
     # The forward window has to be long enough to hold the whole position.
     if time_exit_bars is not None:
@@ -281,7 +327,7 @@ def simulate_sequential(
     signal_idx, direction = signal_idx[same_session], direction[same_session]
     stop_points, target_points = stop_points[same_session], target_points[same_session]
     if signal_idx.size == 0:
-        return _empty()
+        return _empty(instrument)
 
     order = np.argsort(signal_idx, kind="stable")
     signal_idx, direction = signal_idx[order], direction[order]
@@ -318,6 +364,7 @@ def simulate_sequential(
             horizon=horizon,
             time_exit_bars=time_exit_bars,
             slippage_ticks=slip,
+            instrument=instrument,
         )
         rounds.append(res)
         for ent, ex in zip(res.entry_idx, res.exit_idx):
@@ -325,7 +372,7 @@ def simulate_sequential(
             free_from[s] = int(ex)
             taken_count[s] += 1
 
-    return _concat(rounds) if rounds else _empty()
+    return _concat(rounds) if rounds else _empty(instrument)
 
 
 def _concat(parts: list[TradeResult]) -> TradeResult:
@@ -334,6 +381,7 @@ def _concat(parts: list[TradeResult]) -> TradeResult:
     cat = np.concatenate
     order = np.argsort(cat([p.entry_idx for p in parts]), kind="stable")
     return TradeResult(
+        instrument=parts[0].instrument,
         **{
             field: cat([getattr(p, field) for p in parts])[order]
             for field in (

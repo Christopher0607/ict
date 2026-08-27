@@ -70,7 +70,10 @@ class FeatureSet:
 
 
 DEFAULT_LOOKBACKS = (5, 15, 30, 60)
-DEFAULT_OR_MINUTES = (15, 30, 60)
+# 5 and 10 exist for the opening-session grid: a 30-minute entry window cannot
+# trade a 30-minute opening range, because the range is not complete until the
+# window has closed.
+DEFAULT_OR_MINUTES = (5, 10, 15, 30, 60)
 
 
 def build(

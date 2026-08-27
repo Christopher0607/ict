@@ -125,3 +125,45 @@ def test_vwap_is_cumulative_within_a_session_and_resets():
     first_of_s1 = s1[0]
     # The first bar of a session has VWAP equal to its own close.
     assert f.vwap[first_of_s1] == pytest.approx(f.close[first_of_s1])
+
+
+def test_a_thirty_minute_range_cannot_be_traded_in_a_thirty_minute_window():
+    """The reason 5- and 10-minute opening ranges had to be added.
+
+    An opening range is NaN until it is complete, so a 30-minute range first
+    becomes tradeable at minute 30 -- exactly when a 09:30-10:00 entry window
+    closes. Searching the short window with the old or_minutes would have
+    silently produced nothing and looked like a null result.
+    """
+    import numpy as np
+
+    from research.search.features import build
+    from research.search.rules import FAMILIES
+    from tests.test_predictability import _series
+
+    f = build(_series(n_sessions=30, bars=120, seed=5))
+    orb = FAMILIES["orb"]
+
+    late = orb(f, or_minutes=30, entry_from=0, entry_to=30, side="both")
+    assert late.idx.size == 0, "a 30-minute range fired inside a 30-minute window"
+
+    early = orb(f, or_minutes=5, entry_from=0, entry_to=30, side="both")
+    assert early.idx.size > 0
+    assert (f.minutes_into_rth[early.idx] >= 5).all()
+    assert (f.minutes_into_rth[early.idx] < 30).all()
+
+
+def test_opening_drive_is_not_knowable_before_the_drive_completes():
+    import numpy as np
+
+    from research.search.features import build
+    from research.search.rules import FAMILIES
+    from tests.test_predictability import _series
+
+    f = build(_series(n_sessions=30, bars=120, seed=6))
+    sig = FAMILIES["opening_drive"](
+        f, drive_minutes=10, threshold_atr=0.5, entry_from=0, entry_to=60,
+        side="both",
+    )
+    assert sig.idx.size > 0
+    assert (f.minutes_into_rth[sig.idx] >= 10).all(), "fired before the drive closed"
